@@ -186,6 +186,21 @@ def report(workdir: Path) -> dict:
                     [sys.executable, str(SCRIPTS_DIR / "report.py"), str(workdir)])
 
 
+def post_to_jira(workdir: Path, jira_key: str | None,
+                 dry_run: bool, yes: bool,
+                 credentials: str | None) -> dict:
+    cmd = [sys.executable, str(SCRIPTS_DIR / "post_to_jira.py"), str(workdir)]
+    if jira_key:
+        cmd += ["--jira-key", jira_key]
+    if dry_run:
+        cmd += ["--dry-run"]
+    if yes:
+        cmd += ["--yes"]
+    if credentials:
+        cmd += ["--credentials", credentials]
+    return run_step("post_to_jira", cmd)
+
+
 # ---- Main ----------------------------------------------------------------
 
 def main() -> int:
@@ -250,6 +265,18 @@ def main() -> int:
                     help="comma-separated step names to force-rerun "
                          "(fetch/probe/frames/transcribe/dedup/ocr/report). "
                          "Downstream steps are invalidated automatically.")
+    # Jira posting (OPT-IN ONLY -- never default on)
+    ap.add_argument("--post-to-jira", action="store_true",
+                    help="POST the generated report.md as a comment on the source "
+                         "Jira ticket. Requires explicit user authorization. Adds a "
+                         "confirmation prompt unless --post-to-jira-yes is also given. "
+                         "Idempotency-checked: won't double-post a prior /watch-video analysis. "
+                         "Does NOT default on; the agent must never silently enable this.")
+    ap.add_argument("--post-to-jira-yes", action="store_true",
+                    help="skip the interactive confirmation prompt for --post-to-jira "
+                         "(use only when the user has explicitly pre-authorized).")
+    ap.add_argument("--post-to-jira-dry-run", action="store_true",
+                    help="with --post-to-jira: print the comment preview but DO NOT post")
     args = ap.parse_args()
 
     overall_t0 = time.time()
@@ -449,6 +476,20 @@ def main() -> int:
     meta["generated_at"] = int(time.time())
     meta["elapsed_seconds"] = round(time.time() - overall_t0, 2)
     save_meta()
+
+    # 8. Optionally post to Jira -- NEVER default on, never auto-added by the
+    # agent. Per the skill's no-unsolicited-Jira-writes rule, this only runs
+    # when the user explicitly passed --post-to-jira on this invocation.
+    if args.post_to_jira:
+        jira_key = (meta.get("video") or {}).get("issue_key")
+        post_to_jira(
+            workdir,
+            jira_key=jira_key,
+            dry_run=args.post_to_jira_dry_run,
+            yes=args.post_to_jira_yes,
+            credentials=args.credentials,
+        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
     emit("complete", step="orchestrator",
          duration_seconds=meta["elapsed_seconds"],

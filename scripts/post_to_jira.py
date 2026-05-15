@@ -610,13 +610,20 @@ def main() -> int:
         if fname not in unique_fnames:
             unique_fnames.append(fname)
 
-    will_upload_report_html = (
+    # `should_upload_report_html` is the INTENT: what a real summary post
+    # would do (style + file exists). `will_upload_report_html` adds the
+    # dry-run gate -- True only if we'd actually upload on THIS invocation.
+    # The preview/dry-run output must report intent (should_*) so users see
+    # an honest picture of a real run.
+    should_upload_report_html = (
         args.style == STYLE_SUMMARY
         and (workdir / "report.html").exists()
-        and not args.dry_run
     )
+    will_upload_report_html = should_upload_report_html and not args.dry_run
     planned_frame_uploads = len(unique_fnames)
-    planned_total_uploads = planned_frame_uploads + (1 if will_upload_report_html else 0)
+    planned_total_uploads = (
+        planned_frame_uploads + (1 if should_upload_report_html else 0)
+    )
 
     # Build preview ADF with placeholder media UUIDs so the structure (and
     # embedded_count) is accurate without touching Jira. Dry-run uses the same
@@ -662,7 +669,7 @@ def main() -> int:
           file=sys.stderr)
     print(f"Will upload    : {planned_total_uploads} file(s) "
           f"({planned_frame_uploads} frame(s)"
-          + (" + report.html" if will_upload_report_html else "")
+          + (" + report.html" if should_upload_report_html else "")
           + ")", file=sys.stderr)
     print(f"First 3 lines of comment:", file=sys.stderr)
     for line in preview_lines[:3]:
@@ -677,7 +684,7 @@ def main() -> int:
         emit("complete", step="post_to_jira", dry_run=True,
              would_post_to=jira_key,
              would_upload_frames=planned_frame_uploads,
-             would_upload_report_html=will_upload_report_html,
+             would_upload_report_html=should_upload_report_html,
              would_embed_images=embedded_count)
         print(json.dumps({"status": "dry_run", "issue_key": jira_key,
                           "body_chars": body_chars,

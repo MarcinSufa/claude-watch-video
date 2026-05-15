@@ -79,7 +79,10 @@ v1.12.0 (commit `63088e1`) — released 2026-05-15. See <https://github.com/Marc
 
 - **No unsolicited Jira writes.** The `--post-to-jira` flag is opt-in and never default. The confirmation gate runs *before* any attachment upload, so declining leaves the ticket completely untouched.
 - **Idempotency check** — refuses to post a duplicate comment if a signature from a prior `/watch-video` post is found in the last N comments (overridable with `--force`).
-- **Tokens never logged** — `--no-verify`, `--no-gpg-sign`, etc. are never used; credentials are read from `~/.watch-video/credentials.json` or env vars, never echoed.
+- **Tokens never logged.** Credentials are read from env vars or local JSON files, never echoed. Two separate credential stores, each scoped to its own provider:
+  - Atlassian/Jira fetch + post: `~/.atlassian-token/credentials.json` (or `--credentials <path>`).
+  - Anthropic (LLM highlights): `ANTHROPIC_API_KEY` env, or `anthropic_api_key` field in `~/.watch-video/credentials.json` (or `--highlights-credentials <path>`).
+  - Hosted Whisper (Groq / OpenAI): own keys via `~/.watch-video/credentials.json` or `--whisper-credentials <path>`. Local `faster-whisper` needs no credentials.
 - **Atomic writes** — `.partial-<uuid>` staging so a `Ctrl-C` mid-pipeline never leaves a corrupt artifact in the workdir.
 - **Batch mode rejects write flags** — `watch_batch.py` refuses `--post-to-jira` to prevent fan-out misfires.
 

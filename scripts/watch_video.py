@@ -560,6 +560,20 @@ def main() -> int:
 
     # 7. Report (optional) --------------------------------------------------
     if not args.no_report:
+        # python-docx availability participates in the cache key: if a prior
+        # run skipped docx because the dep was missing and the user then
+        # installs python-docx, the fingerprint changes and docx gets
+        # regenerated. Without this, the cache would keep serving the old
+        # [md, html] outputs even though docx is now producible.
+        if args.no_docx:
+            docx_available = False
+        else:
+            try:
+                import docx as _docx_probe  # noqa: F401
+                docx_available = True
+            except ImportError:
+                docx_available = False
+
         # Cache key includes the format flags so toggling --no-html / --no-docx
         # invalidates cache and regenerates the missing format.
         report_fp_inputs = {
@@ -569,21 +583,18 @@ def main() -> int:
             "ocr_step_fp": ocr_step_fp,
             "no_html": args.no_html,
             "no_docx": args.no_docx,
+            "docx_available": docx_available,
         }
         report_fp = step_fingerprint("report", report_fp_inputs)
         report_path = workdir / "report.md"
         expected_report_outputs = [report_path]
         if not args.no_html:
             expected_report_outputs.append(workdir / "report.html")
-        # report.docx is best-effort (skipped if python-docx missing). If a
-        # previous run produced it, require it for cache hit; otherwise the
-        # cache can hit without it. We check the saved cache entry to decide.
-        prev_outputs = (
-            (meta.get("cache", {}).get("steps", {}).get("report") or {})
-            .get("outputs") or []
-        )
-        prev_had_docx = any(str(p).endswith("report.docx") for p in prev_outputs)
-        if not args.no_docx and prev_had_docx:
+        # When python-docx is usable, require report.docx for a cache hit.
+        # When unavailable, the prior fingerprint differs (docx_available
+        # transitioned False -> True), so we'd never reach this branch with
+        # a stale cache entry.
+        if docx_available:
             expected_report_outputs.append(workdir / "report.docx")
 
         if is_cached(meta, "report", report_fp, expected_report_outputs):
@@ -593,8 +604,9 @@ def main() -> int:
                                  no_html=args.no_html,
                                  no_docx=args.no_docx)
             meta["report"] = report_info
-            # Record only outputs that actually exist so the cache check above
-            # remains accurate on the next run (docx may be skipped by warning).
+            # Record only outputs that actually exist so cache state matches
+            # disk state on the next run (docx may still be skipped by
+            # warning if python-docx is uninstalled between probe and run).
             actual_outputs = [report_path]
             if not args.no_html and (workdir / "report.html").exists():
                 actual_outputs.append(workdir / "report.html")

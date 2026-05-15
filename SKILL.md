@@ -80,6 +80,9 @@ c:\tmp\watch-<slug>\
 ├── report.md                    # evidence bundle (Markdown, relative frame paths)
 ├── report.html                  # same content, base64-embedded frames — open in any browser
 ├── report.docx                  # Office-compatible Word doc with native image embedding
+├── highlights.md                # only if highlights ran — LLM-picked moments with reasons
+├── highlights.html              # same, self-contained with base64 frames
+├── highlights.json              # raw picks (consumed by post_to_jira summary mode)
 └── meta.json                    # durable contract — see Schema below
 ```
 
@@ -505,9 +508,18 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-k
 | `--no-embed-images` | Skip image embedding (`mediaSingle` ADF nodes); reference frames as italic text. Default behavior is to embed. Useful when the API token user lacks attachment permissions. |
 | `--style collapsed\|inline\|summary` | Comment layout. **Default: `collapsed`** wraps the timeline in an ADF expand panel (compact ticket UI, click to expand). `inline` shows the full timeline expanded (legacy v1.5.0 behavior, good for short bug repros). `summary` posts only N key moments and attaches `report.html` as a downloadable artifact (good for long videos / archival-heavy teams). |
 | `--summary-key-frames N` | With `--style summary`: number of key timeline moments to include in the comment (default 3, evenly distributed first/middle/last). |
-| `--highlights-prompt "..."` | Enable LLM-driven highlight selection. Describes what to look for ("highlight only bug-related parts", "find every mention of pricing"). Runs `highlights.py` which calls Claude API with the transcript + prompt and writes `highlights.json`. When summary mode posts, picks come from the LLM instead of even distribution. Requires `ANTHROPIC_API_KEY`. |
+| `--highlights-prompt "..."` | Enable LLM-driven highlight selection. Describes what to look for ("highlight only bug-related parts", "find every mention of pricing"). Runs `highlights.py` which calls Claude API with the transcript + prompt and writes `highlights.json`, `highlights.md`, and `highlights.html`. When summary mode posts, picks come from the LLM instead of even distribution. Requires `ANTHROPIC_API_KEY`. |
 | `--highlights-max-n N` | Max highlights the LLM is allowed to pick (default 5). |
 | `--highlights-model NAME` | Anthropic model id (default `claude-haiku-4-5-20251001` — cheap and fast). |
+
+### Two ways to generate highlights
+
+The `highlights` step picks the most relevant moments from the transcript based on a user prompt. Two invocation paths produce the same artifacts (`highlights.json` / `highlights.md` / `highlights.html`):
+
+1. **Inside Claude Code (no API key needed)** — ask Claude conversationally: *"watch CON-1234 then write highlights for the bug-related parts"*. Claude runs the pipeline and reads the transcript / frames in conversation to produce the highlights files directly. This path also gets multimodal vision (Claude can look at the frames), so visual prompts work too.
+2. **Automated (CI / scripted, needs API key)** — `python watch_video.py URL --highlights-prompt "..."` or standalone `python highlights.py <workdir> --prompt "..."`. Calls the Anthropic API via the SDK (default model: Haiku 4.5, ~$0.001-0.005 per video). Same JSON validator + frame-matching logic; produces the same artifact files.
+
+Either way, `post_to_jira.py --style summary` automatically picks up `highlights.json` and uses those moments instead of evenly-distributed picks.
 | `--credentials PATH` | Override default credentials JSON location. |
 
 ### What gets posted

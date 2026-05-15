@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual envs (in case anyone develops inside the repo)
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.cursor/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Skill artifacts: never commit credentials, workdirs, or downloaded media
+credentials.json
+*.atlassian-token
+.watch-video/
+
+# Test artifacts (smoketest workdirs go to TEMP; just in case)
+watch-smoketest-*/
+test-output/

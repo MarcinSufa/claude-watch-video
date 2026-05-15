@@ -1,0 +1,23 @@
+{
+  "name": "watch-video",
+  "version": "1.0.0",
+  "description": "Make Claude watch any video. Local file, public URL (yt-dlp), or Jira attachment (fully automated). Extracts keyframes with ffmpeg, transcribes with local faster-whisper or hosted Groq/OpenAI Whisper, and produces a paste-ready evidence-bundle Markdown report.",
+  "author": {
+    "name": "Marcin Sufa",
+    "email": "sufa.marcin@gmail.com"
+  },
+  "homepage": "https://github.com/MarcinSufa/claude-watch-video",
+  "repository": "https://github.com/MarcinSufa/claude-watch-video",
+  "license": "MIT",
+  "keywords": [
+    "video",
+    "transcription",
+    "whisper",
+    "ffmpeg",
+    "jira",
+    "bug-repro",
+    "screen-recording",
+    "yt-dlp",
+    "multimodal"
+  ]
+}

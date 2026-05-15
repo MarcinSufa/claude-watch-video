@@ -1,0 +1,22 @@
+{
+  "name": "claude-watch-video",
+  "metadata": {
+    "description": "Make Claude watch any video. Local file, public URL, or Jira attachment. Frames + Whisper transcription + paste-ready evidence-bundle Markdown."
+  },
+  "owner": {
+    "name": "Marcin Sufa",
+    "email": "sufa.marcin@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "watch-video",
+      "description": "Watch a video (local path, public URL, or Jira issue key). Downloads with yt-dlp or Atlassian REST, extracts keyframes with ffmpeg, transcribes with local faster-whisper or hosted Groq/OpenAI Whisper, produces a paste-ready report.md.",
+      "author": {
+        "name": "Marcin Sufa"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/MarcinSufa/claude-watch-video"
+    }
+  ]
+}

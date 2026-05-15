@@ -597,46 +597,45 @@ def main() -> int:
                 }))
                 return ExitCode.OK
 
-    # Image embedding: upload referenced frames as attachments, build media map.
-    # In dry-run mode we fake media UUIDs so the ADF structure can be validated
-    # without writing anything to the ticket.
-    media_map: dict[str, str] = {}
-    if not args.no_embed_images:
-        if args.dry_run:
-            refs = _extract_image_refs(md_text)
-            for _, path in refs:
-                fname = Path(path).name
-                if fname not in media_map:
-                    media_map[fname] = f"DRYRUN-UUID-{len(media_map)+1:04d}"
-            emit("complete", step="dry_run_media_map",
-                 fake_media_count=len(media_map))
-        else:
-            media_map = build_media_map(md_text, workdir, site, jira_key, auth)
+    # Planning phase: enumerate what WOULD be uploaded + build a preview ADF
+    # with placeholder UUIDs. No writes happen until after the confirmation
+    # gate below. This is the critical safety property: declining the prompt
+    # must leave the ticket untouched (no orphan attachments).
+    referenced_image_refs = (
+        _extract_image_refs(md_text) if not args.no_embed_images else []
+    )
+    unique_fnames: list[str] = []
+    for _, path in referenced_image_refs:
+        fname = Path(path).name
+        if fname not in unique_fnames:
+            unique_fnames.append(fname)
 
-    # Summary mode: also upload report.html as a ticket attachment so readers
-    # can download the full report. Dry-run skips the upload.
-    if args.style == STYLE_SUMMARY and not args.dry_run:
-        html_path = workdir / "report.html"
-        if html_path.exists():
-            emit("start", step="upload_html", filename=str(html_path.name),
-                 size_bytes=html_path.stat().st_size)
-            upload_attachments([html_path], site, jira_key, auth)
-            emit("complete", step="upload_html")
-        else:
-            emit("warning", step="upload_html",
-                 msg=f"report.html not found at {html_path}; summary mode will "
-                     f"still post but won't have the download link work.")
+    will_upload_report_html = (
+        args.style == STYLE_SUMMARY
+        and (workdir / "report.html").exists()
+        and not args.dry_run
+    )
+    planned_frame_uploads = len(unique_fnames)
+    planned_total_uploads = planned_frame_uploads + (1 if will_upload_report_html else 0)
 
-    adf = md_to_adf(md_text, media_map=media_map)
+    # Build preview ADF with placeholder media UUIDs so the structure (and
+    # embedded_count) is accurate without touching Jira. Dry-run uses the same
+    # placeholder path -- there's no longer a real-vs-fake distinction here.
+    preview_media_map: dict[str, str] = {}
+    for fname in unique_fnames:
+        preview_media_map[fname] = f"PREVIEW-UUID-{len(preview_media_map)+1:04d}"
 
-    # Post-process ADF based on style: collapsed wraps Timeline in an expand
-    # panel; inline keeps the legacy layout; summary keeps as-is (already short).
-    if args.style == STYLE_COLLAPSED:
-        expand_title = (
-            f"Full timeline ({total_paragraphs} frames + transcript)"
-            if total_paragraphs else "Full timeline"
-        )
-        adf = _wrap_timeline_in_expand(adf, expand_title)
+    def _build_full_adf(media_map: dict[str, str]) -> dict:
+        adf_local = md_to_adf(md_text, media_map=media_map)
+        if args.style == STYLE_COLLAPSED:
+            expand_title = (
+                f"Full timeline ({total_paragraphs} frames + transcript)"
+                if total_paragraphs else "Full timeline"
+            )
+            adf_local = _wrap_timeline_in_expand(adf_local, expand_title)
+        return adf_local
+
+    preview_adf = _build_full_adf(preview_media_map)
 
     embedded_count = 0
     def _count_media(blocks):
@@ -646,9 +645,9 @@ def main() -> int:
                 embedded_count += 1
             if isinstance(b.get("content"), list):
                 _count_media(b["content"])
-    _count_media(adf.get("content", []))
+    _count_media(preview_adf.get("content", []))
 
-    # Preview block (always show before posting)
+    # Preview block (always show before any write)
     preview_lines = md_text.splitlines()
     print("=" * 72, file=sys.stderr)
     print(f"Target issue   : {jira_key}", file=sys.stderr)
@@ -657,11 +656,14 @@ def main() -> int:
     if args.style == STYLE_SUMMARY:
         print(f"Key frames     : {len(key_indices)} of {total_paragraphs} total moments "
               f"({moment_source})", file=sys.stderr)
-        print(f"Also attaching : report.html", file=sys.stderr)
-    print(f"Body size      : {body_chars} chars, {len(adf['content'])} top-level ADF blocks",
+    print(f"Body size      : {body_chars} chars, {len(preview_adf['content'])} top-level ADF blocks",
           file=sys.stderr)
     print(f"Embedded images: {embedded_count} mediaSingle nodes",
           file=sys.stderr)
+    print(f"Will upload    : {planned_total_uploads} file(s) "
+          f"({planned_frame_uploads} frame(s)"
+          + (" + report.html" if will_upload_report_html else "")
+          + ")", file=sys.stderr)
     print(f"First 3 lines of comment:", file=sys.stderr)
     for line in preview_lines[:3]:
         print(f"  {line[:100]}", file=sys.stderr)
@@ -674,28 +676,50 @@ def main() -> int:
     if args.dry_run:
         emit("complete", step="post_to_jira", dry_run=True,
              would_post_to=jira_key,
+             would_upload_frames=planned_frame_uploads,
+             would_upload_report_html=will_upload_report_html,
              would_embed_images=embedded_count)
         print(json.dumps({"status": "dry_run", "issue_key": jira_key,
                           "body_chars": body_chars,
-                          "adf_blocks": len(adf["content"]),
-                          "embedded_images": embedded_count}))
+                          "adf_blocks": len(preview_adf["content"]),
+                          "embedded_images": embedded_count,
+                          "planned_upload_count": planned_total_uploads}))
         return ExitCode.OK
 
-    # Interactive confirmation unless --yes
+    # Interactive confirmation BEFORE any write (uploads or post).
+    # If declined, the ticket stays completely untouched -- no orphan
+    # attachments, no partial state.
     if not args.yes:
-        # If stdin isn't a TTY (e.g., orchestrated from a subprocess), abort
-        # with an informative message instead of hanging.
         if not sys.stdin.isatty():
             die(ExitCode.BAD_INPUT,
                 "interactive confirmation required but stdin is not a TTY. "
                 "Either run interactively or pass --yes (only with explicit "
                 "user authorization for this specific post).")
-        print(f"\nAbout to POST a comment to {jira_key}. Type 'yes' to confirm: ",
+        print(f"\nAbout to upload {planned_total_uploads} file(s) and POST a "
+              f"comment to {jira_key}. Type 'yes' to confirm: ",
               file=sys.stderr, end="", flush=True)
         answer = sys.stdin.readline().strip().lower()
         if answer != "yes":
-            print("Aborted.", file=sys.stderr)
+            print("Aborted. Ticket left untouched.", file=sys.stderr)
             return ExitCode.OK
+
+    # ===== Confirmation passed -- writes begin here =====
+
+    # Upload frame attachments and resolve real media UUIDs.
+    media_map: dict[str, str] = {}
+    if not args.no_embed_images and unique_fnames:
+        media_map = build_media_map(md_text, workdir, site, jira_key, auth)
+
+    # Summary mode: upload report.html so readers can download the full report.
+    if will_upload_report_html:
+        html_path = workdir / "report.html"
+        emit("start", step="upload_html", filename=str(html_path.name),
+             size_bytes=html_path.stat().st_size)
+        upload_attachments([html_path], site, jira_key, auth)
+        emit("complete", step="upload_html")
+
+    # Rebuild ADF with real media UUIDs and the same wrap-expand post-process.
+    adf = _build_full_adf(media_map)
 
     # Post
     t0 = time.time()

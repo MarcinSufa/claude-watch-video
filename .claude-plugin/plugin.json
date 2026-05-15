@@ -9,6 +9,7 @@
   "homepage": "https://github.com/MarcinSufa/claude-watch-video",
   "repository": "https://github.com/MarcinSufa/claude-watch-video",
   "license": "MIT",
+  "skills": "./",
   "keywords": [
     "video",
     "transcription",

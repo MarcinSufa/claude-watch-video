@@ -403,21 +403,26 @@ def render_html(workdir: Path, meta: dict) -> str:
     return "\n".join(parts)
 
 
-def render_docx(workdir: Path, meta: dict, output_path: Path) -> None:
+def render_docx(workdir: Path, meta: dict, output_path: Path) -> bool:
     """Write a Word-compatible .docx report with native image embedding.
 
     Uses python-docx (corporate-friendly format, edit/redline-ready). Same
     structure as report.md / report.html: title, source block, timeline
     (transcript paragraph + matched frame thumbnail per moment).
+
+    Returns True if the file was written, False if python-docx is not
+    installed (the report step continues with md + html; docx is optional).
     """
     try:
         from docx import Document  # type: ignore[import-not-found]
         from docx.shared import Inches, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH
     except ImportError:
-        die(ExitCode.MISSING_DEP,
-            "python-docx not installed. Run: pip install --user python-docx",
-            dependency="python-docx")
+        emit("warning", step="docx",
+             msg="python-docx not installed; skipping report.docx. "
+                 "Run `pip install --user python-docx` to enable.",
+             dependency="python-docx")
+        return False
 
     video = meta.get("video") or {}
     probe = meta.get("probe") or {}
@@ -546,6 +551,7 @@ def render_docx(workdir: Path, meta: dict, output_path: Path) -> None:
     footer_run.font.color.rgb = RGBColor(0x6a, 0x73, 0x7d)
 
     doc.save(str(output_path))
+    return True
 
 
 def generate(workdir: Path, *, write_html: bool = True, write_docx: bool = True) -> dict:
@@ -580,12 +586,18 @@ def generate(workdir: Path, *, write_html: bool = True, write_docx: bool = True)
         finalize(html_staging, html_path)
 
     # ---- DOCX (Word-compatible, corporate-friendly) ----
+    # Optional: skipped silently with a warning if python-docx is missing.
     docx_path: Path | None = None
     if write_docx:
-        docx_path = workdir / "report.docx"
-        docx_staging = atomic_path(docx_path)
-        render_docx(workdir, meta, docx_staging)
-        finalize(docx_staging, docx_path)
+        docx_target = workdir / "report.docx"
+        docx_staging = atomic_path(docx_target)
+        wrote_docx = render_docx(workdir, meta, docx_staging)
+        if wrote_docx:
+            finalize(docx_staging, docx_target)
+            docx_path = docx_target
+        elif docx_staging.exists():
+            # Clean up the staging file if render_docx bailed mid-way.
+            docx_staging.unlink()
 
     return {
         "report_path": str(report_path),

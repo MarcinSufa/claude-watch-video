@@ -201,9 +201,13 @@ def transcribe(video: Path, workdir: Path,
     return run_step("transcribe", cmd)
 
 
-def report(workdir: Path) -> dict:
-    return run_step("report",
-                    [sys.executable, str(SCRIPTS_DIR / "report.py"), str(workdir)])
+def report(workdir: Path, *, no_html: bool = False, no_docx: bool = False) -> dict:
+    cmd = [sys.executable, str(SCRIPTS_DIR / "report.py"), str(workdir)]
+    if no_html:
+        cmd.append("--no-html")
+    if no_docx:
+        cmd.append("--no-docx")
+    return run_step("report", cmd)
 
 
 def run_highlights(workdir: Path, prompt: str, max_n: int | None,
@@ -303,6 +307,12 @@ def main() -> int:
     # Report options
     ap.add_argument("--no-report", action="store_true",
                     help="skip report.md generation (faster, no evidence bundle)")
+    ap.add_argument("--no-html", action="store_true",
+                    help="skip report.html generation (Markdown + DOCX still produced)")
+    ap.add_argument("--no-docx", action="store_true",
+                    help="skip report.docx generation. Useful when python-docx is "
+                         "not installed -- the report step otherwise emits a "
+                         "warning and continues.")
     # Progress display
     ap.add_argument("--verbose", "-v", action="store_true",
                     help="print human-readable progress lines to stderr in addition "
@@ -351,6 +361,12 @@ def main() -> int:
                     help="Anthropic model id (default claude-haiku-4-5-20251001)")
     ap.add_argument("--highlights-api-key", default=None,
                     help="Anthropic API key (also reads ANTHROPIC_API_KEY env)")
+    ap.add_argument("--highlights-credentials", default=None,
+                    help="path to credentials JSON containing 'anthropic_api_key'. "
+                         "Distinct from --credentials (which is Atlassian/Jira). "
+                         "Defaults to ~/.watch-video/credentials.json inside "
+                         "highlights.py if neither --highlights-api-key nor env "
+                         "ANTHROPIC_API_KEY is set.")
     args = ap.parse_args()
 
     overall_t0 = time.time()
@@ -544,20 +560,47 @@ def main() -> int:
 
     # 7. Report (optional) --------------------------------------------------
     if not args.no_report:
+        # Cache key includes the format flags so toggling --no-html / --no-docx
+        # invalidates cache and regenerates the missing format.
         report_fp_inputs = {
             "frames_step_fp": frames_fp,
             "transcribe_step_fp": transcribe_step_fp,
             "dedup_step_fp": dedup_step_fp,
             "ocr_step_fp": ocr_step_fp,
+            "no_html": args.no_html,
+            "no_docx": args.no_docx,
         }
         report_fp = step_fingerprint("report", report_fp_inputs)
         report_path = workdir / "report.md"
-        if is_cached(meta, "report", report_fp, [report_path]):
+        expected_report_outputs = [report_path]
+        if not args.no_html:
+            expected_report_outputs.append(workdir / "report.html")
+        # report.docx is best-effort (skipped if python-docx missing). If a
+        # previous run produced it, require it for cache hit; otherwise the
+        # cache can hit without it. We check the saved cache entry to decide.
+        prev_outputs = (
+            (meta.get("cache", {}).get("steps", {}).get("report") or {})
+            .get("outputs") or []
+        )
+        prev_had_docx = any(str(p).endswith("report.docx") for p in prev_outputs)
+        if not args.no_docx and prev_had_docx:
+            expected_report_outputs.append(workdir / "report.docx")
+
+        if is_cached(meta, "report", report_fp, expected_report_outputs):
             emit("cache_hit", step="report", fingerprint=report_fp)
         else:
-            report_info = report(workdir)
+            report_info = report(workdir,
+                                 no_html=args.no_html,
+                                 no_docx=args.no_docx)
             meta["report"] = report_info
-            record_step(meta, "report", report_fp, [report_path])
+            # Record only outputs that actually exist so the cache check above
+            # remains accurate on the next run (docx may be skipped by warning).
+            actual_outputs = [report_path]
+            if not args.no_html and (workdir / "report.html").exists():
+                actual_outputs.append(workdir / "report.html")
+            if not args.no_docx and (workdir / "report.docx").exists():
+                actual_outputs.append(workdir / "report.docx")
+            record_step(meta, "report", report_fp, actual_outputs)
             save_meta()
 
     meta["generated_at"] = int(time.time())
@@ -575,7 +618,10 @@ def main() -> int:
             max_n=args.highlights_max_n,
             model=args.highlights_model,
             api_key=args.highlights_api_key,
-            credentials=args.credentials,
+            # NOTE: do NOT forward args.credentials -- that is the Atlassian
+            # auth path, which would corrupt the Anthropic credentials loader
+            # in highlights.py. Use the dedicated --highlights-credentials flag.
+            credentials=args.highlights_credentials,
         )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 

@@ -501,10 +501,13 @@ Shipped:
 - Multi-source input, three Whisper providers, smart dedup, OCR, per-step cache, bulk mode, opt-in Jira posting
 
 Possible future versions:
-- **Image embedding in Jira comments** — upload frame thumbs as attachments and reference them inline in the ADF body (currently rendered as text references)
-- **Annotated frames** — timestamp watermark overlaid on each JPG for standalone sharing
-- **Speaker diarization** — `Speaker A: ... / Speaker B: ...` labeling for meeting / interview audio (would require `whisperx` or `pyannote.audio`)
-- **Confluence video support** — fetch from embedded video macros on Confluence pages
+- **Translation** — auto-translate transcript to a target language during transcribe (`--translate-to pl` etc.), so a Spanish-language video can land in a Polish-language report. Underlying Whisper supports English translation today; arbitrary-target translation would need a follow-up step (DeepL, Google, or LLM).
+- **`report.html` as Jira ticket attachment** — in addition to the inline ADF comment, upload the full HTML report as a downloadable artifact for archival.
+- **ADF expand panels for long timelines** — collapsible "click to expand" sections so a 60-section comment isn't overwhelming on the ticket page.
+- **`--summary-only` Jira post** — post just the bug-relevant moments + key narrated paragraphs, not the entire timeline. For long videos where the full report is noise on the ticket.
+- **Annotated frames** — timestamp watermark overlaid on each JPG for standalone sharing.
+- **Speaker diarization** — `Speaker A: ... / Speaker B: ...` labeling for meeting / interview audio (would require `whisperx` or `pyannote.audio`).
+- **Confluence video support** — fetch from embedded video macros on Confluence pages.
 
 If you want any of these, [open an issue](https://github.com/MarcinSufa/claude-watch-video/issues) — or send a PR.
 

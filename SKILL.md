@@ -77,7 +77,8 @@ c:\tmp\watch-<slug>\
 ├── transcript.txt               # granular, one line per Whisper segment
 ├── transcript.md                # prose paragraphs, ~8s max
 ├── ocr.txt                      # only if --ocr ran — per-frame OCR text with timestamps
-├── report.md                    # evidence bundle (transcript paragraphs + matched frame thumbs)
+├── report.md                    # evidence bundle (Markdown, relative frame paths)
+├── report.html                  # same content, base64-embedded frames — open in any browser
 └── meta.json                    # durable contract — see Schema below
 ```
 
@@ -359,7 +360,7 @@ If you need to display progress to the user during a long run (large download, s
 | `--attachment-id <ID>` | (Jira mode) disambiguate when multiple video attachments exist |
 | `--credentials <PATH>` | (Jira mode) override default credentials file location |
 | `--since-seconds N` | (auto mode) max age of Downloads file (default 300) |
-| `--no-report` | Skip `report.md` generation (saves <100ms; rarely worth it) |
+| `--no-report` | Skip both `report.md` AND `report.html` generation (saves <100ms; rarely worth it). To skip only HTML, pass `--no-html` through to `report.py` directly. |
 | `--no-cache` | Bypass per-step cache; re-run everything from scratch. |
 | `--force-step NAME[,...]` | Invalidate specific steps (and their downstream). Useful for forcing one step while keeping upstream cache. |
 | `--ocr` | Run Tesseract OCR over kept frames and write `ocr.txt`. **Best for UI bug videos** -- lets you grep on-screen text instead of re-reading every JPEG. ~0.8 s per frame. Requires Tesseract binary + pytesseract + Pillow installed. |

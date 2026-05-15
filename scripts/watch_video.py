@@ -206,6 +206,22 @@ def report(workdir: Path) -> dict:
                     [sys.executable, str(SCRIPTS_DIR / "report.py"), str(workdir)])
 
 
+def run_highlights(workdir: Path, prompt: str, max_n: int | None,
+                   model: str | None, api_key: str | None,
+                   credentials: str | None) -> dict:
+    cmd = [sys.executable, str(SCRIPTS_DIR / "highlights.py"), str(workdir),
+           "--prompt", prompt]
+    if max_n is not None:
+        cmd += ["--max-n", str(max_n)]
+    if model:
+        cmd += ["--model", model]
+    if api_key:
+        cmd += ["--anthropic-api-key", api_key]
+    if credentials:
+        cmd += ["--credentials", credentials]
+    return run_step("highlights", cmd)
+
+
 def post_to_jira(workdir: Path, jira_key: str | None,
                  dry_run: bool, yes: bool,
                  credentials: str | None,
@@ -322,6 +338,19 @@ def main() -> int:
     ap.add_argument("--post-to-jira-summary-key-frames", type=int, default=None,
                     help="--post-to-jira-style summary only: how many key timeline "
                          "moments to include (default 3, evenly distributed)")
+    # Intelligent highlights (LLM-driven moment selection)
+    ap.add_argument("--highlights-prompt", default=None,
+                    help="enable LLM-driven highlight selection. Describes what to "
+                         "look for, e.g. 'highlight only bug-related parts'. Requires "
+                         "ANTHROPIC_API_KEY. Runs highlights.py before posting; when "
+                         "summary mode posts, picks come from the LLM instead of even "
+                         "distribution.")
+    ap.add_argument("--highlights-max-n", type=int, default=None,
+                    help="max number of highlights the LLM is allowed to pick (default 5)")
+    ap.add_argument("--highlights-model", default=None,
+                    help="Anthropic model id (default claude-haiku-4-5-20251001)")
+    ap.add_argument("--highlights-api-key", default=None,
+                    help="Anthropic API key (also reads ANTHROPIC_API_KEY env)")
     args = ap.parse_args()
 
     overall_t0 = time.time()
@@ -534,6 +563,21 @@ def main() -> int:
     meta["generated_at"] = int(time.time())
     meta["elapsed_seconds"] = round(time.time() - overall_t0, 2)
     save_meta()
+
+    # 7.5. Optionally run intelligent highlights (LLM-driven moment picking).
+    # When --highlights-prompt is set, we call highlights.py which writes
+    # highlights.json + adds a `highlights` block to meta. post_to_jira.py's
+    # summary mode auto-picks up highlights.json when present.
+    if args.highlights_prompt and transcribe_info is not None:
+        run_highlights(
+            workdir,
+            prompt=args.highlights_prompt,
+            max_n=args.highlights_max_n,
+            model=args.highlights_model,
+            api_key=args.highlights_api_key,
+            credentials=args.credentials,
+        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
     # 8. Optionally post to Jira -- NEVER default on, never auto-added by the
     # agent. Per the skill's no-unsolicited-Jira-writes rule, this only runs

@@ -505,6 +505,9 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-k
 | `--no-embed-images` | Skip image embedding (`mediaSingle` ADF nodes); reference frames as italic text. Default behavior is to embed. Useful when the API token user lacks attachment permissions. |
 | `--style collapsed\|inline\|summary` | Comment layout. **Default: `collapsed`** wraps the timeline in an ADF expand panel (compact ticket UI, click to expand). `inline` shows the full timeline expanded (legacy v1.5.0 behavior, good for short bug repros). `summary` posts only N key moments and attaches `report.html` as a downloadable artifact (good for long videos / archival-heavy teams). |
 | `--summary-key-frames N` | With `--style summary`: number of key timeline moments to include in the comment (default 3, evenly distributed first/middle/last). |
+| `--highlights-prompt "..."` | Enable LLM-driven highlight selection. Describes what to look for ("highlight only bug-related parts", "find every mention of pricing"). Runs `highlights.py` which calls Claude API with the transcript + prompt and writes `highlights.json`. When summary mode posts, picks come from the LLM instead of even distribution. Requires `ANTHROPIC_API_KEY`. |
+| `--highlights-max-n N` | Max highlights the LLM is allowed to pick (default 5). |
+| `--highlights-model NAME` | Anthropic model id (default `claude-haiku-4-5-20251001` — cheap and fast). |
 | `--credentials PATH` | Override default credentials JSON location. |
 
 ### What gets posted

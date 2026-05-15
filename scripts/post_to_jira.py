@@ -249,6 +249,47 @@ def _pick_summary_indices(paragraph_count: int, n: int) -> list[int]:
     return [round(i * (paragraph_count - 1) / (n - 1)) for i in range(n)]
 
 
+def _load_highlights_indices(workdir: Path, md_text: str) -> list[int] | None:
+    """If highlights.json exists, map its picked timestamps back to paragraph
+    indices in the markdown so summary mode shows the LLM-picked moments.
+    Returns None if no highlights file (caller falls back to even distribution).
+    """
+    hl_path = workdir / "highlights.json"
+    if not hl_path.exists():
+        return None
+    try:
+        hl = json.loads(hl_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    picks = hl.get("highlights") or []
+    if not picks:
+        return None
+
+    # Walk md_text's "### MM:SS" headings to get paragraph indices
+    heading_re = re.compile(r"^### (\d{1,2}):(\d{2})", re.MULTILINE)
+    timestamps_in_order: list[str] = []
+    for m in heading_re.finditer(md_text):
+        timestamps_in_order.append(f"{int(m.group(1)):02d}:{m.group(2)}")
+
+    indices: list[int] = []
+    for p in picks:
+        ts = p.get("timestamp", "")
+        m = re.match(r"^(\d{1,2}):(\d{2})$", ts)
+        if not m:
+            continue
+        normalized = f"{int(m.group(1)):02d}:{m.group(2)}"
+        if normalized in timestamps_in_order:
+            indices.append(timestamps_in_order.index(normalized))
+    # Dedup, sort
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for i in sorted(indices):
+        if i not in seen:
+            seen.add(i)
+            ordered.append(i)
+    return ordered or None
+
+
 def _build_summary_markdown(md_text: str, key_indices: list[int],
                             total_paragraph_count: int,
                             html_filename: str | None) -> str:
@@ -512,9 +553,17 @@ def main() -> int:
 
     # Summary mode rewrites the markdown to a shorter version with N moments
     # and attaches report.html as a ticket artifact.
+    # If <workdir>/highlights.json exists (from highlights.py), we use the
+    # LLM-picked moments instead of evenly-distributed indices.
     html_filename = "report.html"
+    moment_source = "evenly-distributed"
     if args.style == STYLE_SUMMARY:
-        key_indices = _pick_summary_indices(total_paragraphs, args.summary_key_frames)
+        llm_indices = _load_highlights_indices(workdir, md_text_full)
+        if llm_indices:
+            key_indices = llm_indices
+            moment_source = f"llm-picked (highlights.json, {len(llm_indices)} moments)"
+        else:
+            key_indices = _pick_summary_indices(total_paragraphs, args.summary_key_frames)
         md_text = _build_summary_markdown(
             md_text_full, key_indices, total_paragraphs, html_filename,
         )
@@ -606,8 +655,8 @@ def main() -> int:
     print(f"Site           : https://{site}/browse/{jira_key}", file=sys.stderr)
     print(f"Style          : {args.style}", file=sys.stderr)
     if args.style == STYLE_SUMMARY:
-        print(f"Key frames     : {args.summary_key_frames} of {total_paragraphs} total moments",
-              file=sys.stderr)
+        print(f"Key frames     : {len(key_indices)} of {total_paragraphs} total moments "
+              f"({moment_source})", file=sys.stderr)
         print(f"Also attaching : report.html", file=sys.stderr)
     print(f"Body size      : {body_chars} chars, {len(adf['content'])} top-level ADF blocks",
           file=sys.stderr)

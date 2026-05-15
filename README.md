@@ -363,6 +363,11 @@ python scripts/watch_video.py PROJ-1234 --dedup --ocr --post-to-jira \
 # Preview a Jira post without sending anything
 python scripts/watch_video.py PROJ-1234 --dedup --ocr --post-to-jira \
   --post-to-jira-dry-run
+
+# LLM-driven highlight selection — pick the moments that match your intent
+python scripts/watch_video.py PROJ-1234 --dedup --ocr \
+  --highlights-prompt "highlight only bug-related parts" \
+  --post-to-jira --post-to-jira-style summary
 ```
 
 ---
@@ -525,6 +530,7 @@ Possible future versions:
 
 ### Recently shipped
 
+- **Intelligent highlights** ✓ shipped in v1.10.0 — `--highlights-prompt "..."` runs `highlights.py` which feeds the transcript to Claude (Haiku 4.5 by default, configurable) and gets back the N most relevant moments based on the user's prompt. Use cases: *"highlight only bug-related parts"*, *"find every mention of pricing"*, *"show me what the host says about caching"*. Replaces the evenly-distributed picker in summary mode. Cost: ~$0.001-0.005 per video transcript on Haiku.
 - **DOCX report** ✓ shipped in v1.9.0 — `report.docx` generated alongside `report.md` and `report.html`. Native Office Open XML with embedded images. ~3-4 MB for an 80-frame video. Opens in Word, LibreOffice, Google Docs (after upload), and any DOCX-capable viewer. Pass `--no-docx` to skip.
 - **PDF workflow (manual)** ✓ documented — open `report.html` in any browser, press `Ctrl+P`, choose "Save as PDF". Zero deps, browser-quality output. Native PDF generation in the skill itself is on the backlog.
 - **ADF expand panels for long timelines** ✓ shipped in v1.8.0 — collapsible "click to expand" is now the default style for Jira posts.

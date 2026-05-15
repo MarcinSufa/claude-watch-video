@@ -150,9 +150,12 @@ def main() -> int:
          tesseract_path=explicit_path or "PATH")
     t0 = time.time()
 
+    PROGRESS_EVERY_N = 5
     sections: list[tuple[str, float, str]] = []
     frames_total = 0
-    for fname in sorted(timestamps.keys()):
+    ordered_names = sorted(timestamps.keys())
+    total_planned = len(ordered_names)
+    for i, fname in enumerate(ordered_names, 1):
         frame_path = frames_dir / fname
         if not frame_path.exists():
             continue
@@ -167,6 +170,12 @@ def main() -> int:
         if clean_chars < args.min_text_length:
             continue
         sections.append((fname, float(timestamps[fname]), text))
+        # Emit progress every N frames (and on the final frame)
+        if i % PROGRESS_EVERY_N == 0 or i == total_planned:
+            emit("progress", step="ocr",
+                 done=i, total=total_planned,
+                 with_text=len(sections),
+                 elapsed_seconds=round(time.time() - t0, 1))
 
     # Write ocr.txt atomically
     lines: list[str] = []

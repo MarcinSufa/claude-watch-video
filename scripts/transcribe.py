@@ -154,8 +154,24 @@ def transcribe_local(workdir: Path, model_name: str,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
     )
-    segments = [Segment(start=float(s.start), end=float(s.end), text=s.text.strip())
-                for s in segments_iter]
+    # Iterate manually so we can emit per-N-segment progress events. The
+    # iterator is lazy -- each `next()` produces one segment after Whisper
+    # decodes it. We don't know the segment total until it's done, so progress
+    # reports "segment X, audio time up to Y seconds" which gives the user a
+    # sense of how far through the audio Whisper has gotten.
+    PROGRESS_EVERY_N = 10
+    PROGRESS_EVERY_SECONDS = 5.0
+    segments: list[Segment] = []
+    last_emit_at = time.time()
+    for i, s in enumerate(segments_iter, 1):
+        segments.append(Segment(start=float(s.start), end=float(s.end), text=s.text.strip()))
+        now = time.time()
+        if i % PROGRESS_EVERY_N == 0 or (now - last_emit_at) > PROGRESS_EVERY_SECONDS:
+            emit("progress", step="transcribe",
+                 segments_done=i,
+                 audio_position_seconds=round(s.end, 1),
+                 elapsed_seconds=round(now - t0, 1))
+            last_emit_at = now
     emit("complete", step="transcribe",
          duration_seconds=round(time.time() - t0, 2),
          segment_count=len(segments),

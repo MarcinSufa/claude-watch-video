@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -80,25 +81,44 @@ def default_workdir(kind: str, value: str) -> Path:
 # ---- Sub-script invocation -----------------------------------------------
 
 def run_step(name: str, cmd: list[str]) -> dict:
-    """Run a sub-script. Stream its stderr (already JSON-line events) through.
-    Parse its single-JSON-object stdout. Propagate exit code on failure.
+    """Run a sub-script. STREAM its stderr to our stderr line-by-line so users
+    see progress events in real time. Collect stdout in full (we need to parse
+    it as JSON at the end).
 
-    On non-zero exits we ALSO forward stdout -- this matters for ExitCode.AMBIGUOUS
-    where the sub-script prints a candidates JSON the agent needs to see.
+    Propagate exit code on failure. On non-zero exits we also forward stdout
+    (needed for ExitCode.AMBIGUOUS where stdout carries the candidates JSON).
     """
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.stderr:
-        sys.stderr.write(proc.stderr)
-        sys.stderr.flush()
+    import threading
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,  # line-buffered
+    )
+
+    def _pump_stderr() -> None:
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+    stderr_thread = threading.Thread(target=_pump_stderr, daemon=True)
+    stderr_thread.start()
+
+    assert proc.stdout is not None
+    stdout_data = proc.stdout.read()
+    proc.wait()
+    stderr_thread.join(timeout=2)
+
     if proc.returncode != 0:
-        # Forward stdout so AMBIGUOUS candidates and similar payloads reach the agent
-        if proc.stdout:
-            sys.stdout.write(proc.stdout)
+        if stdout_data:
+            sys.stdout.write(stdout_data)
             sys.stdout.flush()
         sys.exit(proc.returncode)
-    if not proc.stdout.strip():
+    if not stdout_data.strip():
         die(ExitCode.IO_FAIL, f"step {name} produced no output")
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    return json.loads(stdout_data.strip().splitlines()[-1])
 
 
 def fetch(kind: str, value: str, workdir: Path,
@@ -261,6 +281,11 @@ def main() -> int:
     # Report options
     ap.add_argument("--no-report", action="store_true",
                     help="skip report.md generation (faster, no evidence bundle)")
+    # Progress display
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="print human-readable progress lines to stderr in addition "
+                         "to the JSON event lines. On a TTY, progress events update "
+                         "in place (carriage-return overwrite) for the active step.")
     # Cache options
     ap.add_argument("--no-cache", action="store_true",
                     help="bypass the per-step cache; re-run every step from scratch")
@@ -290,6 +315,14 @@ def main() -> int:
     workdir.mkdir(parents=True, exist_ok=True)
     meta_path = workdir / "meta.json"
     frames_dir = workdir / "frames"
+
+    # Verbose mode: propagate to subprocesses via env vars. WATCH_VERBOSE turns
+    # on human-readable pretty lines in _common.emit(); WATCH_VERBOSE_TTY adds
+    # in-place \r overwriting for progress events when stderr is a TTY.
+    if args.verbose:
+        os.environ["WATCH_VERBOSE"] = "1"
+        if sys.stderr.isatty():
+            os.environ["WATCH_VERBOSE_TTY"] = "1"
 
     # Load existing meta.json to inherit cache state; reset if --no-cache.
     if meta_path.exists() and not args.no_cache:

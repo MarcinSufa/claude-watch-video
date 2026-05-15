@@ -46,24 +46,30 @@ Most "watch a video" skills can handle YouTube and call it a day. Bug-triage wor
 
 ## Pipeline
 
-```mermaid
-flowchart LR
-    A([Input]) --> B[fetch]
-    B --> C[probe]
-    C --> D[frames]
-    C --> E[transcribe]
-    D --> F[dedup]
-    E --> F
-    F --> G[ocr]
-    G --> H[report]
-    H -.->|opt-in only| I([Jira comment])
-
-    classDef opt fill:#fff,stroke:#999,stroke-dasharray: 5 5
-    classDef pipeline fill:#e8f0ff,stroke:#3a6
-    classDef io fill:#fff8e1,stroke:#b80
-    class A,I io
-    class B,C,D,E,F,G,H pipeline
-    class I opt
+```
+            input
+              │
+              ▼
+            fetch
+              │
+              ▼
+            probe
+             / \
+            /   \
+        frames   transcribe
+            \   /
+             \ /
+            dedup
+              │
+              ▼
+             ocr
+              │
+              ▼
+           report
+              │
+              ╎  (opt-in, never default)
+              ▼
+         Jira comment
 ```
 
 | Step | What it does | Cached? |
@@ -300,18 +306,21 @@ The plugin / skill install (see [Quick start](#quick-start)) handles the file pl
 
 ### Tiered onboarding
 
-```mermaid
-flowchart TD
-    A[Install plugin/skill] --> B{What do you need?}
-    B -->|Local files only| C[ffmpeg + faster-whisper]
-    B -->|Add YouTube/Loom/...| D[+ yt-dlp]
-    B -->|Add Jira auto-fetch| E[+ Atlassian API token]
-    B -->|Add token efficiency| F[+ Pillow/imagehash for --dedup]
-    B -->|Add on-screen text grep| G[+ Tesseract for --ocr]
-    B -->|Add speed| H[+ GROQ_API_KEY for hosted Whisper]
+```
+  1. Install plugin/skill
+            │
+            ▼
+  2. What do you need next?
+            │
+            ├─ Just local files          → ffmpeg + faster-whisper        (the baseline)
+            ├─ YouTube / Loom / etc.     → + yt-dlp
+            ├─ Jira auto-fetch           → + Atlassian API token
+            ├─ Token efficiency          → + Pillow + imagehash  (--dedup)
+            ├─ On-screen text grep       → + Tesseract            (--ocr)
+            └─ Faster cold-start         → + GROQ_API_KEY  (hosted Whisper)
 ```
 
-Each tier is independent. Start with C, add others as your workflow needs them.
+Each tier is independent. Start with the baseline, add others as your workflow needs them.
 
 ---
 
@@ -373,56 +382,50 @@ Full reference with every flag, default value, and per-script invocation pattern
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph User input
-        IN([path / URL / Jira key])
-    end
-
-    subgraph "Orchestrators"
-        WV[watch_video.py<br/>single-item]
-        WB[watch_batch.py<br/>bulk]
-    end
-
-    subgraph "Pipeline steps"
-        FT[fetch.py]
-        PR[probe.py]
-        FR[frames.py]
-        TR[transcribe.py]
-        DD[dedup.py]
-        OC[ocr.py]
-        RP[report.py]
-        PJ[post_to_jira.py<br/>opt-in]
-    end
-
-    subgraph "Shared"
-        CM[_common.py<br/>events, exit codes, atomic writes]
-        CA[_cache.py<br/>step fingerprints, DAG]
-    end
-
-    subgraph "Artifacts"
-        DISK([workdir/<br/>frames + transcripts + ocr.txt<br/>report.md + meta.json])
-    end
-
-    IN --> WV
-    IN --> WB
-    WB -.fan-out.-> WV
-    WV --> FT --> PR --> FR --> TR --> DD --> OC --> RP
-    RP -.->|user-authorized| PJ
-    RP --> DISK
-    FT -.uses.-> CM
-    FR -.uses.-> CM
-    TR -.uses.-> CM
-    WV -.uses.-> CA
-
-    classDef orch fill:#e8f0ff,stroke:#3a6,stroke-width:2px
-    classDef shared fill:#fff8e1,stroke:#b80
-    classDef pipe fill:#f0fff0,stroke:#393
-    classDef opt fill:#fff,stroke:#999,stroke-dasharray: 5 5
-    class WV,WB orch
-    class CM,CA shared
-    class FT,PR,FR,TR,DD,OC,RP pipe
-    class PJ opt
+```
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │  User input                                                            │
+ │     path / URL / Jira key                                              │
+ └────────────┬──────────────────────────────────┬─────────────────────────┘
+              │                                  │
+              ▼                                  ▼
+   ┌─────────────────────────┐    ┌──────────────────────────┐
+   │ watch_video.py          │ ←──┤ watch_batch.py           │
+   │ (single-item)           │ fan│ (bulk, JQL or key list)  │
+   └────────────┬────────────┘ -out└──────────────────────────┘
+                │
+                ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │  Pipeline steps                                                  │
+   │    fetch.py → probe.py → frames.py → transcribe.py               │
+   │                                            │                     │
+   │                                            ▼                     │
+   │                                       dedup.py                   │
+   │                                            │                     │
+   │                                            ▼                     │
+   │                                          ocr.py                  │
+   │                                            │                     │
+   │                                            ▼                     │
+   │                                        report.py                 │
+   │                                            │                     │
+   │                                            ╎  (user-authorized)  │
+   │                                            ▼                     │
+   │                                    post_to_jira.py               │
+   └─────────────────────────────────┬───────────────────────────────┘
+                                     │
+                                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │  Shared helpers                                                  │
+   │    _common.py:  structured events · exit codes · atomic writes   │
+   │    _cache.py:   step fingerprints · dependency DAG               │
+   └─────────────────────────────────┬───────────────────────────────┘
+                                     │
+                                     ▼
+   ┌─────────────────────────────────────────────────────────────────┐
+   │  workdir/                                                        │
+   │    frames/ + audio.wav + transcript.txt + transcript.md          │
+   │    ocr.txt + report.md + meta.json                               │
+   └─────────────────────────────────────────────────────────────────┘
 ```
 
 Each step is a standalone Python script that can be invoked directly. The orchestrators (`watch_video.py` for single videos, `watch_batch.py` for many) thread them together with caching and structured event emission. Sub-scripts write to `meta.json` as the durable schema-versioned contract; downstream tools (the agent, the orchestrator, future analyzers) read it.
@@ -442,15 +445,21 @@ Each step is a standalone Python script that can be invoked directly. The orches
 
 Some actions affect shared state (Jira tickets) and need to be deliberate. The skill is layered:
 
-```mermaid
-flowchart LR
-    A([Run watch_video.py]) -->|defaults: local-only| B([Files on disk])
-    A -.->|--post-to-jira flag<br/>+ confirmation prompt<br/>+ idempotency check| C([Jira comment])
-
-    classDef safe fill:#e8ffe8,stroke:#393
-    classDef gated fill:#fff8e1,stroke:#b80,stroke-dasharray: 4 4
-    class A,B safe
-    class C gated
+```
+   ┌──────────────────────┐
+   │ watch_video.py runs  │
+   └─────────┬────────────┘
+             │
+   ┌─────────┴───────────────────┐
+   │                             │
+   ▼  (defaults)                 ▼  (--post-to-jira, opt-in)
+                                 │
+   Files on disk                 ├─ Confirmation prompt
+   in your local workdir         ├─ Idempotency check (skip if already posted)
+   (nothing leaves the           │
+    machine unless you           ▼
+    use a URL / hosted          Jira comment
+    Whisper)
 ```
 
 | Layer | Behavior |

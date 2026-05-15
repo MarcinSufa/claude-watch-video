@@ -383,49 +383,71 @@ Full reference with every flag, default value, and per-script invocation pattern
 ## Architecture
 
 ```
- ┌───────────────────────────────────────────────────────────────────────┐
- │  User input                                                            │
- │     path / URL / Jira key                                              │
- └────────────┬──────────────────────────────────┬─────────────────────────┘
-              │                                  │
-              ▼                                  ▼
-   ┌─────────────────────────┐    ┌──────────────────────────┐
-   │ watch_video.py          │ ←──┤ watch_batch.py           │
-   │ (single-item)           │ fan│ (bulk, JQL or key list)  │
-   └────────────┬────────────┘ -out└──────────────────────────┘
-                │
-                ▼
-   ┌─────────────────────────────────────────────────────────────────┐
-   │  Pipeline steps                                                  │
-   │    fetch.py → probe.py → frames.py → transcribe.py               │
-   │                                            │                     │
-   │                                            ▼                     │
-   │                                       dedup.py                   │
-   │                                            │                     │
-   │                                            ▼                     │
-   │                                          ocr.py                  │
-   │                                            │                     │
-   │                                            ▼                     │
-   │                                        report.py                 │
-   │                                            │                     │
-   │                                            ╎  (user-authorized)  │
-   │                                            ▼                     │
-   │                                    post_to_jira.py               │
-   └─────────────────────────────────┬───────────────────────────────┘
-                                     │
-                                     ▼
-   ┌─────────────────────────────────────────────────────────────────┐
-   │  Shared helpers                                                  │
-   │    _common.py:  structured events · exit codes · atomic writes   │
-   │    _cache.py:   step fingerprints · dependency DAG               │
-   └─────────────────────────────────┬───────────────────────────────┘
-                                     │
-                                     ▼
-   ┌─────────────────────────────────────────────────────────────────┐
-   │  workdir/                                                        │
-   │    frames/ + audio.wav + transcript.txt + transcript.md          │
-   │    ocr.txt + report.md + meta.json                               │
-   └─────────────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────┐
+ │  User input                                    │
+ │  path  /  URL  /  Jira key                     │
+ └────────────────────┬───────────────────────────┘
+                      │
+            ┌─────────┴─────────────────┐
+            │                           │
+            ▼                           ▼
+ ┌──────────────────────┐    ┌─────────────────────────┐
+ │ watch_video.py       │◀───│ watch_batch.py          │
+ │ (single-item)        │    │ (bulk: JQL or key list) │
+ └──────────┬───────────┘    └─────────────────────────┘
+            │                fan-out: one child per item
+            ▼
+ ┌────────────────────────────────────────────────┐
+ │  Pipeline steps                                │
+ │                                                │
+ │       fetch.py                                 │
+ │          │                                     │
+ │          ▼                                     │
+ │       probe.py                                 │
+ │          │                                     │
+ │          ▼                                     │
+ │       frames.py                                │
+ │          │                                     │
+ │          ▼                                     │
+ │       transcribe.py                            │
+ │          │                                     │
+ │          ▼                                     │
+ │       dedup.py                                 │
+ │          │                                     │
+ │          ▼                                     │
+ │       ocr.py                                   │
+ │          │                                     │
+ │          ▼                                     │
+ │       report.py                                │
+ │          │                                     │
+ │          ╎  (user-authorized)                  │
+ │          ▼                                     │
+ │       post_to_jira.py                          │
+ │                                                │
+ └────────────────────┬───────────────────────────┘
+                      │
+                      ▼
+ ┌────────────────────────────────────────────────┐
+ │  Shared helpers                                │
+ │                                                │
+ │  _common.py   structured events · exit codes   │
+ │               · atomic writes                  │
+ │                                                │
+ │  _cache.py    step fingerprints · dependency   │
+ │               DAG                              │
+ └────────────────────┬───────────────────────────┘
+                      │
+                      ▼
+ ┌────────────────────────────────────────────────┐
+ │  workdir/                                      │
+ │                                                │
+ │    frames/                                     │
+ │    audio.wav                                   │
+ │    transcript.txt  + transcript.md             │
+ │    ocr.txt                                     │
+ │    report.md                                   │
+ │    meta.json                                   │
+ └────────────────────────────────────────────────┘
 ```
 
 Each step is a standalone Python script that can be invoked directly. The orchestrators (`watch_video.py` for single videos, `watch_batch.py` for many) thread them together with caching and structured event emission. Sub-scripts write to `meta.json` as the durable schema-versioned contract; downstream tools (the agent, the orchestrator, future analyzers) read it.

@@ -236,6 +236,24 @@ def main() -> int:
     # Everything else gets forwarded to watch_video.py
     args, forwarded = ap.parse_known_args()
 
+    # SAFETY: bulk mode is documented as read-only. Reject any flag that would
+    # trigger a Jira write (auto-post). Each ticket has to be posted explicitly
+    # via the standalone post_to_jira.py, not implicitly by a batch run.
+    WRITE_FLAGS = {"--post-to-jira", "--post-to-jira-yes", "--post-to-jira-dry-run"}
+    leaked_writes = WRITE_FLAGS.intersection(forwarded)
+    if leaked_writes:
+        die(ExitCode.BAD_INPUT,
+            f"Batch mode is read-only by design. The following write flags are "
+            f"not allowed and were rejected: {sorted(leaked_writes)}. "
+            f"To post analyses to Jira tickets, run post_to_jira.py on each "
+            f"workdir individually with explicit confirmation.",
+            rejected_flags=sorted(leaked_writes))
+
+    # Forward --credentials if the caller specified it (used for JQL expansion
+    # AND each child's Jira fetch -- they must use the same site/auth).
+    if args.credentials:
+        forwarded = ["--credentials", args.credentials] + forwarded
+
     raw_inputs = parse_inputs(args)
 
     batch_dir = Path(args.batch_dir) if args.batch_dir else \

@@ -346,11 +346,16 @@ def main() -> int:
     save_meta()
 
     # 3. Frames --------------------------------------------------------------
+    # `dedup_will_mutate` is part of the frames-step fingerprint because dedup
+    # rewrites the same frames/ directory in place. Without this flag in the
+    # fingerprint, toggling --dedup between runs would cause the next run to
+    # cache-hit on a directory whose contents are the wrong (deduped) subset.
     frames_fp_inputs = {
         "video_fp": file_fingerprint(video),
         "frames": args.frames, "resolution": args.resolution,
         "start": args.start, "end": args.end,
         "scene_mode": args.scene_mode, "scene_threshold": args.scene_threshold,
+        "dedup_will_mutate": args.dedup,
     }
     frames_fp = step_fingerprint("frames", frames_fp_inputs)
     if is_cached(meta, "frames", frames_fp, [frames_dir]):

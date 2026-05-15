@@ -31,6 +31,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
+from _cache import (  # noqa: E402
+    dir_fingerprint, file_fingerprint, get_cache, invalidate_downstream,
+    is_cached, record_step, step_fingerprint,
+)
 
 
 SCRIPTS_DIR = Path(__file__).parent
@@ -239,29 +243,104 @@ def main() -> int:
     # Report options
     ap.add_argument("--no-report", action="store_true",
                     help="skip report.md generation (faster, no evidence bundle)")
+    # Cache options
+    ap.add_argument("--no-cache", action="store_true",
+                    help="bypass the per-step cache; re-run every step from scratch")
+    ap.add_argument("--force-step", default=None,
+                    help="comma-separated step names to force-rerun "
+                         "(fetch/probe/frames/transcribe/dedup/ocr/report). "
+                         "Downstream steps are invalidated automatically.")
     args = ap.parse_args()
 
     overall_t0 = time.time()
     kind, value = classify_input(args.input)
     workdir = Path(args.workdir).resolve() if args.workdir else default_workdir(kind, value)
     workdir.mkdir(parents=True, exist_ok=True)
-    emit("start", step="orchestrator", workdir=str(workdir), input_kind=kind)
+    meta_path = workdir / "meta.json"
+    frames_dir = workdir / "frames"
 
-    # 1. Fetch input → local path
-    fetch_info = fetch(kind, value, workdir,
-                       args.attachment_id, args.credentials, args.since_seconds)
-    video = Path(fetch_info["path"])
+    # Load existing meta.json to inherit cache state; reset if --no-cache.
+    if meta_path.exists() and not args.no_cache:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            meta = {}
+    else:
+        meta = {}
+    # Ensure required scaffolding
+    meta.setdefault("schema_version", 2)
+    meta.setdefault("workdir", str(workdir))
+    meta.setdefault("input", {"raw": args.input, "kind": kind, "value": value})
+    meta.setdefault("window", {"start": args.start, "end": args.end})
+    meta.setdefault("report", None)
+    if args.no_cache:
+        meta["cache"] = {"schema": 1, "steps": {}}
+    get_cache(meta)  # ensure cache block exists
 
-    # 2. Probe
+    # Honor --force-step: drop those entries (downstream is invalidated when run)
+    if args.force_step:
+        for step in (s.strip() for s in args.force_step.split(",") if s.strip()):
+            meta["cache"]["steps"].pop(step, None)
+            invalidate_downstream(meta, step)
+
+    emit("start", step="orchestrator", workdir=str(workdir),
+         input_kind=kind, cache_enabled=not args.no_cache)
+
+    def save_meta() -> None:
+        staging = atomic_path(meta_path)
+        staging.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        finalize(staging, meta_path)
+
+    # 1. Fetch ---------------------------------------------------------------
+    fetch_fp_inputs = {
+        "input": args.input, "kind": kind, "value": value,
+        "attachment_id": args.attachment_id,
+        "credentials": args.credentials,
+        "since_seconds": args.since_seconds if kind == "auto" else None,
+    }
+    fetch_fp = step_fingerprint("fetch", fetch_fp_inputs)
+    cached_video_path = Path(meta.get("video", {}).get("path") or "")
+    if is_cached(meta, "fetch", fetch_fp, [cached_video_path] if cached_video_path.name else []):
+        emit("cache_hit", step="fetch", fingerprint=fetch_fp)
+        fetch_info = meta["video"]
+        video = Path(fetch_info["path"])
+    else:
+        invalidate_downstream(meta, "fetch")
+        fetch_info = fetch(kind, value, workdir,
+                           args.attachment_id, args.credentials, args.since_seconds)
+        meta["video"] = fetch_info
+        video = Path(fetch_info["path"])
+        record_step(meta, "fetch", fetch_fp, [video])
+    save_meta()
+
+    # 2. Probe (always re-run; it's cheap and its result gates transcription) -
     probe_info = probe(video)
+    meta["probe"] = probe_info
+    save_meta()
 
-    # 3. Frames
-    frames_info = extract_frames(video, workdir,
-                                  args.frames, args.resolution,
-                                  args.start, args.end,
-                                  args.scene_mode, args.scene_threshold)
+    # 3. Frames --------------------------------------------------------------
+    frames_fp_inputs = {
+        "video_fp": file_fingerprint(video),
+        "frames": args.frames, "resolution": args.resolution,
+        "start": args.start, "end": args.end,
+        "scene_mode": args.scene_mode, "scene_threshold": args.scene_threshold,
+    }
+    frames_fp = step_fingerprint("frames", frames_fp_inputs)
+    if is_cached(meta, "frames", frames_fp, [frames_dir]):
+        emit("cache_hit", step="frames", fingerprint=frames_fp,
+             frame_count=meta.get("frames", {}).get("frame_count"))
+        frames_info = meta["frames"]
+    else:
+        invalidate_downstream(meta, "frames")
+        frames_info = extract_frames(video, workdir,
+                                      args.frames, args.resolution,
+                                      args.start, args.end,
+                                      args.scene_mode, args.scene_threshold)
+        meta["frames"] = frames_info
+        record_step(meta, "frames", frames_fp, [frames_dir])
+    save_meta()
 
-    # 4. Transcribe (optional)
+    # 4. Transcribe (optional) ----------------------------------------------
     transcribe_info: dict | None = None
     skipped_audio_reason: str | None = None
     if args.no_audio:
@@ -270,57 +349,107 @@ def main() -> int:
         skipped_audio_reason = "no audio stream"
     elif probe_info["is_silent"]:
         skipped_audio_reason = f"silent track (mean_volume={probe_info['mean_volume_db']} dB)"
+
+    if skipped_audio_reason:
+        meta["transcript"] = None
+        meta["skipped_audio_reason"] = skipped_audio_reason
+        # Skipping invalidates any prior transcript-derived caches downstream
+        meta["cache"]["steps"].pop("transcribe", None)
+        invalidate_downstream(meta, "transcribe")
     else:
-        transcribe_info = transcribe(video, workdir, args.model, args.lang,
-                                     args.start, args.end,
-                                     args.whisper, args.whisper_api_key,
-                                     args.whisper_credentials)
+        transcribe_fp_inputs = {
+            "video_fp": file_fingerprint(video),
+            "start": args.start, "end": args.end,
+            "whisper": args.whisper, "model": args.model, "lang": args.lang,
+        }
+        transcribe_fp = step_fingerprint("transcribe", transcribe_fp_inputs)
+        transcript_outputs = [workdir / "transcript.txt", workdir / "transcript.md"]
+        if is_cached(meta, "transcribe", transcribe_fp, transcript_outputs):
+            emit("cache_hit", step="transcribe", fingerprint=transcribe_fp)
+            transcribe_info = meta.get("transcript")
+        else:
+            invalidate_downstream(meta, "transcribe")
+            transcribe_info = transcribe(video, workdir, args.model, args.lang,
+                                         args.start, args.end,
+                                         args.whisper, args.whisper_api_key,
+                                         args.whisper_credentials)
+            meta["transcript"] = transcribe_info
+            meta["skipped_audio_reason"] = None
+            record_step(meta, "transcribe", transcribe_fp, transcript_outputs)
+    save_meta()
 
-    # 5. Write meta.json (atomic) -- needed before dedup/report.py read it
-    meta = {
-        "schema_version": 2,
-        "workdir": str(workdir),
-        "input": {"raw": args.input, "kind": kind, "value": value},
-        "video": fetch_info,
-        "probe": probe_info,
-        "frames": frames_info,
-        "transcript": transcribe_info,
-        "skipped_audio_reason": skipped_audio_reason,
-        "window": {"start": args.start, "end": args.end},
-        "report": None,
-        "generated_at": int(time.time()),
-        "elapsed_seconds": round(time.time() - overall_t0, 2),
-    }
-    meta_path = workdir / "meta.json"
-    staging = atomic_path(meta_path)
-    staging.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    finalize(staging, meta_path)
+    # Track the transcribe step fingerprint for downstream cache inputs.
+    transcribe_step_fp = meta["cache"]["steps"].get("transcribe", {}).get("fingerprint")
 
-    # 6. Smart dedup (transcript-aware) -- runs after transcribe so paragraph
-    # timestamps protect narrated moments. dedup.py updates meta.json in place.
+    # 5. Dedup (optional) ---------------------------------------------------
+    # Use upstream step fingerprints (frames_fp, transcribe_fp) -- they identify
+    # the upstream inputs/flags deterministically, even when the upstream
+    # step mutated its own output dir (which dedup does to frames/).
+    dedup_step_fp: str | None = None
     if args.dedup:
-        smart_dedup(workdir,
-                    args.dedup_threshold,
-                    args.dedup_min_interval,
-                    args.dedup_protect_window)
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        dedup_fp_inputs = {
+            "frames_step_fp": frames_fp,
+            "transcribe_step_fp": transcribe_step_fp,
+            "threshold": args.dedup_threshold,
+            "min_interval": args.dedup_min_interval,
+            "protect_window": args.dedup_protect_window,
+        }
+        dedup_step_fp = step_fingerprint("dedup", dedup_fp_inputs)
+        if is_cached(meta, "dedup", dedup_step_fp, [frames_dir]):
+            emit("cache_hit", step="dedup", fingerprint=dedup_step_fp,
+                 frame_count=meta.get("frames", {}).get("frame_count"))
+        else:
+            invalidate_downstream(meta, "dedup")
+            smart_dedup(workdir,
+                        args.dedup_threshold,
+                        args.dedup_min_interval,
+                        args.dedup_protect_window)
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            record_step(meta, "dedup", dedup_step_fp, [frames_dir])
+            save_meta()
 
-    # 7. OCR (optional) -- after dedup so we only OCR the kept frames.
-    # ocr.py updates meta.json in place with the `ocr` block.
+    # 6. OCR (optional) -----------------------------------------------------
+    ocr_step_fp: str | None = None
     if args.ocr:
-        ocr(workdir, args.ocr_lang, args.ocr_min_text_length)
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        ocr_fp_inputs = {
+            "frames_step_fp": frames_fp,
+            "dedup_step_fp": dedup_step_fp,
+            "lang": args.ocr_lang,
+            "min_text_length": args.ocr_min_text_length,
+        }
+        ocr_step_fp = step_fingerprint("ocr", ocr_fp_inputs)
+        ocr_path = workdir / "ocr.txt"
+        if is_cached(meta, "ocr", ocr_step_fp, [ocr_path]):
+            emit("cache_hit", step="ocr", fingerprint=ocr_step_fp)
+        else:
+            invalidate_downstream(meta, "ocr")
+            ocr(workdir, args.ocr_lang, args.ocr_min_text_length)
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            record_step(meta, "ocr", ocr_step_fp, [ocr_path])
+            save_meta()
 
-    # 8. Generate evidence bundle (report.md) -- after dedup + OCR so it
-    # reflects the final frame inventory and links to ocr.txt.
+    # 7. Report (optional) --------------------------------------------------
     if not args.no_report:
-        report_info = report(workdir)
-        meta["report"] = report_info
-        staging = atomic_path(meta_path)
-        staging.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        finalize(staging, meta_path)
+        report_fp_inputs = {
+            "frames_step_fp": frames_fp,
+            "transcribe_step_fp": transcribe_step_fp,
+            "dedup_step_fp": dedup_step_fp,
+            "ocr_step_fp": ocr_step_fp,
+        }
+        report_fp = step_fingerprint("report", report_fp_inputs)
+        report_path = workdir / "report.md"
+        if is_cached(meta, "report", report_fp, [report_path]):
+            emit("cache_hit", step="report", fingerprint=report_fp)
+        else:
+            report_info = report(workdir)
+            meta["report"] = report_info
+            record_step(meta, "report", report_fp, [report_path])
+            save_meta()
 
+    meta["generated_at"] = int(time.time())
     meta["elapsed_seconds"] = round(time.time() - overall_t0, 2)
+    save_meta()
+
     emit("complete", step="orchestrator",
          duration_seconds=meta["elapsed_seconds"],
          meta_path=str(meta_path))

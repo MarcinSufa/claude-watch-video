@@ -500,6 +500,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-k
 | `--dry-run` | Print preview + ADF block summary; DO NOT POST. |
 | `--yes` | Skip the interactive confirmation prompt. Use only when you've explicitly authorized this specific post. |
 | `--force` | Bypass the idempotency check; post even if a prior `/watch-video` comment already exists. |
+| `--no-embed-images` | Skip image embedding (`mediaSingle` ADF nodes); reference frames as italic text. Default behavior is to embed. Useful when the API token user lacks attachment permissions. |
 | `--credentials PATH` | Override default credentials JSON location. |
 
 ### What gets posted
@@ -509,10 +510,10 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-k
 - `# heading` → ADF heading block (level 1-6)
 - `> blockquote` → ADF blockquote
 - `---` → ADF horizontal rule
-- `![alt](path)` → italic text `[frame: ![alt](path)]` (image embedding requires uploading the JPG as a ticket attachment first; not yet implemented)
+- `![alt](path)` → **embedded image** (`mediaSingle` node). Each referenced frame is first uploaded to the ticket as an attachment via `POST /rest/api/3/issue/<KEY>/attachments`, then its media-services UUID is resolved and embedded in the ADF. Pass `--no-embed-images` to fall back to italic text references (the v1 behavior).
 - Plain text → ADF paragraphs
 
-The resulting comment renders cleanly on Atlassian Cloud's UI with proper headings and blockquote styling. Frame images appear as text references for now; for actual image embedding in comments, attach the frames manually or wait for the v2 of this feature.
+The resulting comment renders cleanly on Atlassian Cloud's UI with proper headings, blockquote styling, and inline frame thumbnails. If the API token user lacks the *Add Attachments* permission on the project, the script logs a warning, falls back to text-only references, and still posts the comment.
 
 ### Idempotency signature
 

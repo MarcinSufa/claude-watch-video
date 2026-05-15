@@ -188,7 +188,8 @@ def report(workdir: Path) -> dict:
 
 def post_to_jira(workdir: Path, jira_key: str | None,
                  dry_run: bool, yes: bool,
-                 credentials: str | None) -> dict:
+                 credentials: str | None,
+                 no_embed_images: bool = False) -> dict:
     cmd = [sys.executable, str(SCRIPTS_DIR / "post_to_jira.py"), str(workdir)]
     if jira_key:
         cmd += ["--jira-key", jira_key]
@@ -198,6 +199,8 @@ def post_to_jira(workdir: Path, jira_key: str | None,
         cmd += ["--yes"]
     if credentials:
         cmd += ["--credentials", credentials]
+    if no_embed_images:
+        cmd += ["--no-embed-images"]
     return run_step("post_to_jira", cmd)
 
 
@@ -277,6 +280,8 @@ def main() -> int:
                          "(use only when the user has explicitly pre-authorized).")
     ap.add_argument("--post-to-jira-dry-run", action="store_true",
                     help="with --post-to-jira: print the comment preview but DO NOT post")
+    ap.add_argument("--post-to-jira-no-embed-images", action="store_true",
+                    help="with --post-to-jira: skip image embedding (text refs only)")
     args = ap.parse_args()
 
     overall_t0 = time.time()
@@ -493,6 +498,7 @@ def main() -> int:
             dry_run=args.post_to_jira_dry_run,
             yes=args.post_to_jira_yes,
             credentials=args.credentials,
+            no_embed_images=args.post_to_jira_no_embed_images,
         )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 

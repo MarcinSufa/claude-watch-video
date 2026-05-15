@@ -79,6 +79,7 @@ c:\tmp\watch-<slug>\
 ├── ocr.txt                      # only if --ocr ran — per-frame OCR text with timestamps
 ├── report.md                    # evidence bundle (Markdown, relative frame paths)
 ├── report.html                  # same content, base64-embedded frames — open in any browser
+├── report.docx                  # Office-compatible Word doc with native image embedding
 └── meta.json                    # durable contract — see Schema below
 ```
 

@@ -403,7 +403,152 @@ def render_html(workdir: Path, meta: dict) -> str:
     return "\n".join(parts)
 
 
-def generate(workdir: Path, *, write_html: bool = True) -> dict:
+def render_docx(workdir: Path, meta: dict, output_path: Path) -> None:
+    """Write a Word-compatible .docx report with native image embedding.
+
+    Uses python-docx (corporate-friendly format, edit/redline-ready). Same
+    structure as report.md / report.html: title, source block, timeline
+    (transcript paragraph + matched frame thumbnail per moment).
+    """
+    try:
+        from docx import Document  # type: ignore[import-not-found]
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        die(ExitCode.MISSING_DEP,
+            "python-docx not installed. Run: pip install --user python-docx",
+            dependency="python-docx")
+
+    video = meta.get("video") or {}
+    probe = meta.get("probe") or {}
+    transcript = meta.get("transcript")
+    frames_info = meta.get("frames") or {}
+    timestamps_by_frame: dict[str, float] = frames_info.get("timestamps_by_frame", {})
+    ocr_info = meta.get("ocr") or {}
+
+    doc = Document()
+
+    # ---- Title ----
+    issue_key = video.get("issue_key")
+    video_title = video.get("title")
+    if issue_key:
+        page_title = f"{issue_key} - {video.get('issue_summary', '')}".strip(" -")
+    elif video_title:
+        page_title = str(video_title)
+    else:
+        page_title = Path(str(video.get("path", "video"))).name
+    doc.add_heading(page_title, level=1)
+
+    # ---- Evidence banner ----
+    banner_para = doc.add_paragraph()
+    banner_run = banner_para.add_run(
+        "Evidence bundle -- frames + narration captured by /watch-video. "
+        "Add your analysis above or below; the timeline below is auto-generated."
+    )
+    banner_run.italic = True
+    if ocr_info.get("path"):
+        ocr_para = doc.add_paragraph()
+        ocr_run = ocr_para.add_run(
+            f"On-screen text from {ocr_info.get('frames_with_text', 0)} "
+            f"frame(s) extracted to ocr.txt."
+        )
+        ocr_run.italic = True
+
+    # ---- Source ----
+    doc.add_heading("Source", level=2)
+    if issue_key:
+        site = video.get("site")
+        link = f"https://{site}/browse/{issue_key}" if site else issue_key
+        doc.add_paragraph(f"Issue: {link}", style="List Bullet")
+        doc.add_paragraph(
+            f"Attachment: {video.get('attachment_name', '')}", style="List Bullet"
+        )
+    elif video.get("source_url"):
+        doc.add_paragraph(f"URL: {video['source_url']}", style="List Bullet")
+        if video_title:
+            doc.add_paragraph(f"Title: {video_title}", style="List Bullet")
+        if video.get("uploader"):
+            doc.add_paragraph(f"Uploader: {video['uploader']}", style="List Bullet")
+        if video.get("extractor"):
+            doc.add_paragraph(f"Source: {video['extractor']}", style="List Bullet")
+        if video.get("upload_date"):
+            d = video["upload_date"]
+            if len(d) == 8:
+                doc.add_paragraph(f"Uploaded: {d[:4]}-{d[4:6]}-{d[6:8]}", style="List Bullet")
+        doc.add_paragraph(
+            f"File: {Path(video.get('path', '')).name}", style="List Bullet"
+        )
+    else:
+        doc.add_paragraph(
+            f"File: {Path(video.get('path', '')).name}", style="List Bullet"
+        )
+        doc.add_paragraph(f"Source: {video.get('source', 'unknown')}", style="List Bullet")
+    if probe.get("duration"):
+        dur = probe["duration"]
+        m = int(dur // 60); s = dur % 60
+        dur_str = f"{m}:{s:05.2f}" if m else f"{s:.1f}s"
+        dim_str = f" ({probe.get('width')}x{probe.get('height')})" if probe.get("width") else ""
+        doc.add_paragraph(f"Duration: {dur_str}{dim_str}", style="List Bullet")
+    if probe.get("has_audio"):
+        doc.add_paragraph(
+            f"Audio: {probe.get('audio_codec')} @ {probe.get('audio_sample_rate')} Hz, "
+            f"mean volume {probe.get('mean_volume_db')} dB",
+            style="List Bullet",
+        )
+    if transcript:
+        doc.add_paragraph(
+            f"Language: {transcript.get('language')} "
+            f"(p={transcript.get('language_probability')})",
+            style="List Bullet",
+        )
+
+    # ---- Timeline ----
+    frames = list_frames(workdir / "frames")
+    doc.add_heading("Timeline", level=2)
+    if transcript:
+        paragraphs = parse_prose_transcript(workdir / "transcript.md")
+        if not paragraphs:
+            doc.add_paragraph("(no transcript paragraphs to render)").italic = True
+        else:
+            for ts_seconds, text in paragraphs:
+                frame = nearest_frame(ts_seconds, frames, timestamps_by_frame)
+                ts_str = format_ts(ts_seconds)
+                doc.add_heading(ts_str, level=3)
+                if frame is not None and frame.exists():
+                    try:
+                        doc.add_picture(str(frame), width=Inches(5.5))
+                    except Exception as e:
+                        # If a frame is corrupt, skip it rather than failing the whole report
+                        emit("warning", step="docx_embed_image",
+                             msg=f"failed to embed {frame.name}: {e}")
+                doc.add_paragraph(text, style="Intense Quote")
+    else:
+        skip_reason = meta.get("skipped_audio_reason", "no transcript")
+        skip_para = doc.add_paragraph(f"Transcription skipped: {skip_reason}.")
+        skip_para.runs[0].italic = True
+        doc.add_heading("Timeline (silent video -- frames only)", level=3)
+        for frame in frames:
+            ts = float(timestamps_by_frame.get(frame.name, 0.0))
+            ts_str = format_ts(ts)
+            doc.add_heading(f"{ts_str} - {frame.name}", level=4)
+            try:
+                doc.add_picture(str(frame), width=Inches(5.5))
+            except Exception as e:
+                emit("warning", step="docx_embed_image",
+                     msg=f"failed to embed {frame.name}: {e}")
+
+    # ---- Footer ----
+    doc.add_paragraph()  # blank
+    footer_para = doc.add_paragraph()
+    footer_run = footer_para.add_run("Generated by /watch-video skill -- frames + faster-whisper transcript.")
+    footer_run.italic = True
+    footer_run.font.size = Pt(9)
+    footer_run.font.color.rgb = RGBColor(0x6a, 0x73, 0x7d)
+
+    doc.save(str(output_path))
+
+
+def generate(workdir: Path, *, write_html: bool = True, write_docx: bool = True) -> dict:
     meta_path = workdir / "meta.json"
     if not meta_path.exists():
         die(ExitCode.BAD_INPUT, f"meta.json not found at {meta_path} -- run watch_video.py first")
@@ -434,9 +579,18 @@ def generate(workdir: Path, *, write_html: bool = True) -> dict:
         html_staging.write_text(html_text, encoding="utf-8")
         finalize(html_staging, html_path)
 
+    # ---- DOCX (Word-compatible, corporate-friendly) ----
+    docx_path: Path | None = None
+    if write_docx:
+        docx_path = workdir / "report.docx"
+        docx_staging = atomic_path(docx_path)
+        render_docx(workdir, meta, docx_staging)
+        finalize(docx_staging, docx_path)
+
     return {
         "report_path": str(report_path),
         "html_path": str(html_path) if html_path else None,
+        "docx_path": str(docx_path) if docx_path else None,
     }
 
 
@@ -446,20 +600,27 @@ def main() -> int:
     ap.add_argument("--no-html", action="store_true",
                     help="skip report.html generation (Markdown only). HTML output "
                          "embeds frame thumbnails as base64 so it works in any browser "
-                         "without workspace sandboxing issues; pass this flag if you "
-                         "don't need the HTML version.")
+                         "without workspace sandboxing issues.")
+    ap.add_argument("--no-docx", action="store_true",
+                    help="skip report.docx generation. DOCX is the Office-compatible "
+                         "format (best for corporate workflows where the report gets "
+                         "redlined / shared via Outlook). Requires python-docx.")
     args = ap.parse_args()
 
     workdir = Path(args.workdir).resolve()
     if not workdir.exists():
         die(ExitCode.BAD_INPUT, f"workdir not found: {workdir}")
 
-    emit("start", step="report", workdir=str(workdir), write_html=(not args.no_html))
+    emit("start", step="report", workdir=str(workdir),
+         write_html=(not args.no_html), write_docx=(not args.no_docx))
     t0 = time.time()
-    result = generate(workdir, write_html=(not args.no_html))
+    result = generate(workdir,
+                      write_html=(not args.no_html),
+                      write_docx=(not args.no_docx))
     emit("complete", step="report", duration_seconds=round(time.time() - t0, 2),
          report_path=result["report_path"],
-         html_path=result["html_path"])
+         html_path=result["html_path"],
+         docx_path=result["docx_path"])
 
     print(json.dumps(result))
     return ExitCode.OK

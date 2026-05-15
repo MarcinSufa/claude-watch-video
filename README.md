@@ -516,9 +516,8 @@ Shipped:
 - Multi-source input, three Whisper providers, smart dedup, OCR, per-step cache, bulk mode, opt-in Jira posting
 
 Possible future versions:
-- **DOCX report** — generate `report.docx` alongside `report.md` and `report.html`, using `python-docx`. Better for corporate workflows where reports get redlined / shared via Office. ~1 hr.
-- **PDF report** — generate `report.pdf` from `report.html` using `weasyprint` or `wkhtmltopdf`. Best for archival and "final" handoffs. ~1 hr.
-- **Intelligent highlights** — replace the current "evenly distributed N moments" heuristic for summary mode with an LLM-driven selection of the *actually most important* moments (semantic topic shifts, narrator emphasis, visually-distinct frames). Could feed the transcript to Claude itself and ask "pick the N most informative moments." ~2 hr.
+- **Native PDF generation** — current recommended PDF workflow is to open `report.html` in any browser and use **Ctrl+P → Save as PDF** (zero deps, high-quality output). If a fully-automated PDF is wanted, future versions could integrate `wkhtmltopdf` (external Windows installer) or `weasyprint` (heavy system libs). ~1 hr if we commit to one of those.
+- **Intelligent highlights** — replace the current "evenly distributed N moments" heuristic for summary mode with an LLM-driven selection. Coming soon as `--highlights-prompt "..."` with user-supplied criteria like *"highlight only bug-related parts"* — feeds the transcript to Claude API and gets back semantic moment picks. ~2 hr.
 - **Translation** — auto-translate transcript to a target language during transcribe (`--translate-to pl` etc.), so a Spanish-language video can land in a Polish-language report. Underlying Whisper supports English translation today; arbitrary-target translation would need a follow-up step (DeepL, Google, or LLM). ~2 hr.
 - **Annotated frames** — timestamp watermark overlaid on each JPG for standalone sharing. ~1 hr.
 - **Speaker diarization** — `Speaker A: ... / Speaker B: ...` labeling for meeting / interview audio (would require `whisperx` or `pyannote.audio`). ~2 hr.
@@ -526,6 +525,8 @@ Possible future versions:
 
 ### Recently shipped
 
+- **DOCX report** ✓ shipped in v1.9.0 — `report.docx` generated alongside `report.md` and `report.html`. Native Office Open XML with embedded images. ~3-4 MB for an 80-frame video. Opens in Word, LibreOffice, Google Docs (after upload), and any DOCX-capable viewer. Pass `--no-docx` to skip.
+- **PDF workflow (manual)** ✓ documented — open `report.html` in any browser, press `Ctrl+P`, choose "Save as PDF". Zero deps, browser-quality output. Native PDF generation in the skill itself is on the backlog.
 - **ADF expand panels for long timelines** ✓ shipped in v1.8.0 — collapsible "click to expand" is now the default style for Jira posts.
 - **`--style summary` Jira post + `report.html` as ticket attachment** ✓ shipped in v1.8.0 — short comment with N key moments, full HTML downloadable.
 

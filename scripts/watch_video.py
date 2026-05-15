@@ -209,7 +209,9 @@ def report(workdir: Path) -> dict:
 def post_to_jira(workdir: Path, jira_key: str | None,
                  dry_run: bool, yes: bool,
                  credentials: str | None,
-                 no_embed_images: bool = False) -> dict:
+                 no_embed_images: bool = False,
+                 style: str | None = None,
+                 summary_key_frames: int | None = None) -> dict:
     cmd = [sys.executable, str(SCRIPTS_DIR / "post_to_jira.py"), str(workdir)]
     if jira_key:
         cmd += ["--jira-key", jira_key]
@@ -221,6 +223,10 @@ def post_to_jira(workdir: Path, jira_key: str | None,
         cmd += ["--credentials", credentials]
     if no_embed_images:
         cmd += ["--no-embed-images"]
+    if style:
+        cmd += ["--style", style]
+    if summary_key_frames is not None:
+        cmd += ["--summary-key-frames", str(summary_key_frames)]
     return run_step("post_to_jira", cmd)
 
 
@@ -307,6 +313,15 @@ def main() -> int:
                     help="with --post-to-jira: print the comment preview but DO NOT post")
     ap.add_argument("--post-to-jira-no-embed-images", action="store_true",
                     help="with --post-to-jira: skip image embedding (text refs only)")
+    ap.add_argument("--post-to-jira-style", choices=("collapsed", "inline", "summary"),
+                    default=None,
+                    help="comment layout: 'collapsed' (default) wraps Timeline in an ADF "
+                         "expand panel; 'inline' shows full Timeline expanded (legacy); "
+                         "'summary' posts N key moments and attaches report.html as a "
+                         "downloadable artifact.")
+    ap.add_argument("--post-to-jira-summary-key-frames", type=int, default=None,
+                    help="--post-to-jira-style summary only: how many key timeline "
+                         "moments to include (default 3, evenly distributed)")
     args = ap.parse_args()
 
     overall_t0 = time.time()
@@ -532,6 +547,8 @@ def main() -> int:
             yes=args.post_to_jira_yes,
             credentials=args.credentials,
             no_embed_images=args.post_to_jira_no_embed_images,
+            style=args.post_to_jira_style,
+            summary_key_frames=args.post_to_jira_summary_key_frames,
         )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 

@@ -502,6 +502,8 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-k
 | `--yes` | Skip the interactive confirmation prompt. Use only when you've explicitly authorized this specific post. |
 | `--force` | Bypass the idempotency check; post even if a prior `/watch-video` comment already exists. |
 | `--no-embed-images` | Skip image embedding (`mediaSingle` ADF nodes); reference frames as italic text. Default behavior is to embed. Useful when the API token user lacks attachment permissions. |
+| `--style collapsed\|inline\|summary` | Comment layout. **Default: `collapsed`** wraps the timeline in an ADF expand panel (compact ticket UI, click to expand). `inline` shows the full timeline expanded (legacy v1.5.0 behavior, good for short bug repros). `summary` posts only N key moments and attaches `report.html` as a downloadable artifact (good for long videos / archival-heavy teams). |
+| `--summary-key-frames N` | With `--style summary`: number of key timeline moments to include in the comment (default 3, evenly distributed first/middle/last). |
 | `--credentials PATH` | Override default credentials JSON location. |
 
 ### What gets posted

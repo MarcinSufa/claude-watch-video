@@ -350,6 +350,19 @@ python scripts/watch_batch.py \
 # Tweak one flag — only affected steps re-run (~5s vs ~30s cold)
 python scripts/watch_video.py PROJ-1234 --workdir c:/tmp/watch-proj-1234 \
   --dedup --dedup-threshold 3 --ocr
+
+# Post analysis back to the ticket (opt-in, confirmation prompt)
+# Default style is `collapsed`: short ticket comment with click-to-expand timeline
+python scripts/watch_video.py PROJ-1234 --dedup --ocr --post-to-jira
+
+# Post a *summary* comment with 5 key moments + report.html attached as download
+# (good for long videos where a 60-section comment would be a wall)
+python scripts/watch_video.py PROJ-1234 --dedup --ocr --post-to-jira \
+  --post-to-jira-style summary --post-to-jira-summary-key-frames 5
+
+# Preview a Jira post without sending anything
+python scripts/watch_video.py PROJ-1234 --dedup --ocr --post-to-jira \
+  --post-to-jira-dry-run
 ```
 
 ---
@@ -371,7 +384,9 @@ python scripts/watch_video.py PROJ-1234 --workdir c:/tmp/watch-proj-1234 \
 | `--no-audio` | Skip transcription |
 | `--no-cache` | Bypass the per-step output cache |
 | `--force-step NAME[,...]` | Force a specific step (downstream auto-invalidates) |
-| `--post-to-jira` | **Opt-in only**: post `report.md` as a Jira comment |
+| `--post-to-jira` | **Opt-in only**: post `report.md` as a Jira comment. By default the Timeline section is wrapped in an ADF expand panel (click-to-show on the ticket). Pass `--post-to-jira-style summary` for a short comment with key moments + `report.html` attached; `--post-to-jira-style inline` for the legacy v1.5.0 full-inline layout. |
+| `--post-to-jira-style {collapsed,inline,summary}` | Jira comment layout. Default `collapsed`. |
+| `--post-to-jira-summary-key-frames N` | Number of key moments in `--style summary` (default 3, evenly distributed). |
 | `--no-report` | Skip `report.md` generation |
 | `--attachment-id <ID>` | (Jira) disambiguate multiple video attachments |
 | `--credentials <PATH>` | (Jira) override credentials JSON path |
@@ -501,13 +516,18 @@ Shipped:
 - Multi-source input, three Whisper providers, smart dedup, OCR, per-step cache, bulk mode, opt-in Jira posting
 
 Possible future versions:
-- **Translation** — auto-translate transcript to a target language during transcribe (`--translate-to pl` etc.), so a Spanish-language video can land in a Polish-language report. Underlying Whisper supports English translation today; arbitrary-target translation would need a follow-up step (DeepL, Google, or LLM).
-- **`report.html` as Jira ticket attachment** — in addition to the inline ADF comment, upload the full HTML report as a downloadable artifact for archival.
-- **ADF expand panels for long timelines** — collapsible "click to expand" sections so a 60-section comment isn't overwhelming on the ticket page.
-- **`--summary-only` Jira post** — post just the bug-relevant moments + key narrated paragraphs, not the entire timeline. For long videos where the full report is noise on the ticket.
-- **Annotated frames** — timestamp watermark overlaid on each JPG for standalone sharing.
-- **Speaker diarization** — `Speaker A: ... / Speaker B: ...` labeling for meeting / interview audio (would require `whisperx` or `pyannote.audio`).
-- **Confluence video support** — fetch from embedded video macros on Confluence pages.
+- **DOCX report** — generate `report.docx` alongside `report.md` and `report.html`, using `python-docx`. Better for corporate workflows where reports get redlined / shared via Office. ~1 hr.
+- **PDF report** — generate `report.pdf` from `report.html` using `weasyprint` or `wkhtmltopdf`. Best for archival and "final" handoffs. ~1 hr.
+- **Intelligent highlights** — replace the current "evenly distributed N moments" heuristic for summary mode with an LLM-driven selection of the *actually most important* moments (semantic topic shifts, narrator emphasis, visually-distinct frames). Could feed the transcript to Claude itself and ask "pick the N most informative moments." ~2 hr.
+- **Translation** — auto-translate transcript to a target language during transcribe (`--translate-to pl` etc.), so a Spanish-language video can land in a Polish-language report. Underlying Whisper supports English translation today; arbitrary-target translation would need a follow-up step (DeepL, Google, or LLM). ~2 hr.
+- **Annotated frames** — timestamp watermark overlaid on each JPG for standalone sharing. ~1 hr.
+- **Speaker diarization** — `Speaker A: ... / Speaker B: ...` labeling for meeting / interview audio (would require `whisperx` or `pyannote.audio`). ~2 hr.
+- **Confluence video support** — fetch from embedded video macros on Confluence pages. ~2 hr.
+
+### Recently shipped
+
+- **ADF expand panels for long timelines** ✓ shipped in v1.8.0 — collapsible "click to expand" is now the default style for Jira posts.
+- **`--style summary` Jira post + `report.html` as ticket attachment** ✓ shipped in v1.8.0 — short comment with N key moments, full HTML downloadable.
 
 If you want any of these, [open an issue](https://github.com/MarcinSufa/claude-watch-video/issues) — or send a PR.
 

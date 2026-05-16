@@ -7,6 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20macOS%20%7C%20linux-lightgrey.svg)](#prerequisites)
 [![Skill](https://img.shields.io/badge/Claude%20Code-skill-purple.svg)](https://docs.claude.com/en/docs/claude-code)
 [![Plugin](https://img.shields.io/badge/Claude%20Code-plugin-purple.svg)](https://docs.claude.com/en/docs/claude-code/plugins)
+[![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](mcp-server/README.md)
 
 This skill turns "watch CON-1234 and tell me what broke" into a single command. It downloads the video, extracts keyframes with ffmpeg, transcribes audio with local or hosted Whisper, deduplicates near-identical frames while preserving narrated moments, optionally OCRs on-screen text, and writes a paste-ready `report.md` — all in under a minute.
 
@@ -126,6 +127,30 @@ Restart Claude Code; the skill auto-loads.
 ```bash
 python scripts/watch_video.py PROJ-1234 --dedup --ocr
 ```
+
+### As an MCP server (Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat)
+
+```bash
+git clone https://github.com/MarcinSufa/claude-watch-video
+cd claude-watch-video/mcp-server
+pip install -e .  # or pip install -e ".[full]" for all underlying CLI deps
+```
+
+Then register `claude-watch-video-mcp` as an MCP server in your host. For Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "watch-video": {
+      "command": "claude-watch-video-mcp"
+    }
+  }
+}
+```
+
+For Codex CLI: `codex mcp add watch-video --command claude-watch-video-mcp`.
+
+Full host-by-host setup + tool reference + safety contract for `post_to_jira`: [mcp-server/README.md](mcp-server/README.md).
 
 The full set of capabilities is documented in [`SKILL.md`](SKILL.md). What follows in this README is the marketing tour.
 

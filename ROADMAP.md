@@ -5,7 +5,7 @@ Snapshot date: 2026-05-16. Revisit after each release to re-prioritise.
 
 ## Architecture decision: CLI-first + thin MCP wrapper
 
-**Status:** decided, not yet implemented.
+**Status:** SHIPPED in v2.0.0. See `mcp-server/`.
 
 The CLI is the canonical interface and the source of truth. An MCP server is a thin adapter (~150-250 LOC) that calls the existing scripts under the hood. This shape gives the broadest reach with minimum duplication.
 
@@ -39,7 +39,7 @@ Confirmation gate for `post_to_jira` lives in the wrapper -- requires `confirm=t
 
 | # | Item | Effort | Status |
 |---|---|---|---|
-| 1 | **MCP server wrapper.** Thin adapter calling existing scripts. New `mcp-server/` dir; published as `claude-watch-video-mcp` install option. | 1-2d | **Next up (v2.0.0).** Doubles install surface (Claude Desktop, Codex MCP-mode, Cursor, Continue, Cline, Windsurf, Zed, VS Code Copilot Chat). |
+| 1 | **MCP server wrapper.** Thin adapter calling existing scripts. New `mcp-server/` dir; published as `claude-watch-video-mcp` install option. | 1-2d | **Shipped in v2.0.0** (6 tools + 1 resource; FastMCP-based; `post_to_jira` dry-run default with explicit `confirm=True` for writes). Unlocks Claude Desktop, Codex MCP-mode, Cursor, Continue, Cline, Windsurf, Zed, VS Code Copilot Chat. |
 | 2 | **Free YouTube captions first, Whisper fallback.** `yt-dlp --writesubtitles` before paying for Whisper. | 2-3h | **Shipped in v1.13.0** (7.6x speedup on YouTube vs local Whisper). |
 | 3 | **GitHub Issues integration** alongside Jira. Same code structure (`fetch.py`, `post_to_jira.py` analogues). | 1d | Planned for v2.1.0. 10x audience -- GitHub has millions of devs vs. Jira's tens of thousands. |
 | 4 | **Multi-provider highlights** (`--highlights-provider openai|anthropic|groq`). | ~2h | **Shipped in v1.13.0.** |
@@ -98,7 +98,7 @@ Direct Claude Code video plugins (2026-05):
 
 - **v1.12.x branch** -- bug fixes, security/safety improvements, doc polish. (Shipped.)
 - **v1.13.0** -- items #2, #4, #5, #8: captions-first transcription, multi-provider highlights, expanded Use Cases, frame-budget tuning. (Shipped 2026-05-16.)
-- **v2.0.0** -- the MCP wrapper (item #1). New install surface justifies a major bump.
+- **v2.0.0** -- the MCP wrapper (item #1). (Shipped 2026-05-16.) New install surface justified the major bump.
 - **v2.1+** -- GitHub Issues (#3), Linear (#7), CI recipe (#9), Slack/Discord (#10).
 
 ## Sources for future reference

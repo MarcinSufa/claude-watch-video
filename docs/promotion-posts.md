@@ -13,7 +13,7 @@ Install one-liner: `/plugin marketplace add MarcinSufa/claude-watch-video` then 
 |---|---|---|
 | **travisvn/awesome-claude-skills** | PR open | <https://github.com/travisvn/awesome-claude-skills/pull/743> |
 | **jqueryscript/awesome-claude-code** | PR open | <https://github.com/jqueryscript/awesome-claude-code/pull/284> |
-| **hesreallyhim/awesome-claude-code** | Pending -- must be submitted via web UI issue form (see below) | n/a |
+| **hesreallyhim/awesome-claude-code** | Issue submitted, awaiting bot validation + maintainer review | <https://github.com/hesreallyhim/awesome-claude-code/issues/1836> |
 | **ComposioHQ/awesome-claude-skills** | Skipped (their own skills monorepo, not a cross-listing index) | n/a |
 | **rohitg00/awesome-claude-code-toolkit** | Skipped (their own plugin distribution) | n/a |
 

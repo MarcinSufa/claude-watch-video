@@ -29,7 +29,63 @@ Install one-liner: `/plugin marketplace add MarcinSufa/claude-watch-video` then 
 
 ---
 
-## hesreallyhim/awesome-claude-code -- manual submission required
+## hesreallyhim/awesome-claude-code -- git-timesheet manual submission
+
+**Open this URL in your browser:**
+
+<https://github.com/hesreallyhim/awesome-claude-code/issues/new?template=recommend-resource.yml>
+
+Field-by-field paste content:
+
+| Field | Paste |
+|---|---|
+| **Display Name** | `git-timesheet` |
+| **Category** | `Tooling` |
+| **Sub-Category** | `General` (or whatever Tooling variant fits best) |
+| **Primary Link** | `https://github.com/MarcinSufa/git-timesheet` |
+| **Author Name** | `Marcin Sufa` |
+| **Author Link** | `https://github.com/MarcinSufa` |
+| **License** | `MIT` |
+
+**Description** (1-3 sentences, no emojis):
+
+```
+Turns your git commit history into realistic weekly timesheets -- hours allocated by commit complexity (lines changed, files touched), not flat splits. Outputs print-ready PDF and importable CSV, supports public holidays for 9 countries plus PTO/sick days, has 6 built-in languages with dynamic translation, and pushes time entries directly to Toggl, Clockify, TMetric, and Harvest APIs. Matches custom company PDF templates from a sample file, so your output looks like your existing timesheet form.
+```
+
+**Validate Claims:**
+
+```
+Install via /plugin marketplace add MarcinSufa/git-timesheet then /plugin install git-timesheet@marcin-sufa-plugins. The README documents the install command, a quick-start example, and a How-It-Works section with a Mermaid diagram of the commit-weight allocation algorithm. The repo's examples/ directory includes a sample-timesheet.pdf showing the actual output format.
+```
+
+**Specific Task(s):**
+
+```
+1. Generate a weekly timesheet for the current week: "/timesheet for last week" -- the plugin reads commits across configured repos, weighs each by lines changed and files touched, allocates 8 hours per day proportionally, and writes a PDF + CSV.
+2. Push generated entries to Toggl/Clockify/TMetric/Harvest: configure the integration once in your profile, then run "/timesheet --push toggl" to send the entries directly via the provider's API.
+3. Match a company-specific timesheet format: drop a sample PDF or PNG of your employer's timesheet form in the configured templates directory, and the plugin imitates the layout for future outputs.
+```
+
+**Specific Prompt(s):**
+
+```
+- "Generate my timesheet for the week of May 5 to May 9, 2026, using the 'sysdyne' profile."
+- "Create a CSV timesheet for the last two weeks across all my repos, using Polish holidays."
+- "Generate this week's timesheet as PDF and push it to Clockify."
+```
+
+**Additional Comments (optional):**
+
+```
+First commit: 2026-04-22. Latest tag: 1.0.4-beta. The plugin is part of the marcin-sufa-plugins marketplace at https://github.com/MarcinSufa/git-timesheet. Output examples are in examples/. Supports configurable work hours, project mapping, saved per-client profiles, and 6 languages out of the box (English, Polish, German, French, Spanish, Italian) plus dynamic translation for other locales.
+```
+
+**Recommendation Checklist** -- tick all 5 boxes (repo is 24 days old so the one-week-rule item is clean).
+
+---
+
+## hesreallyhim/awesome-claude-code -- watch-video manual submission (HELD until 2026-05-21)
 
 This list bans PR submissions and explicitly blocks `gh` CLI. Submission must be done via the GitHub web UI issue form by a human. Below is exact content to paste into each field.
 

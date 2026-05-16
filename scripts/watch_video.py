@@ -183,7 +183,8 @@ def transcribe(video: Path, workdir: Path,
                model: str | None, lang: str | None,
                start: str | None, end: str | None,
                whisper: str, whisper_api_key: str | None,
-               whisper_credentials: str | None) -> dict:
+               whisper_credentials: str | None,
+               captions_vtt: str | None = None) -> dict:
     cmd = [sys.executable, str(SCRIPTS_DIR / "transcribe.py"), str(workdir),
            "--video", str(video), "--whisper", whisper]
     if model:
@@ -198,6 +199,8 @@ def transcribe(video: Path, workdir: Path,
         cmd += ["--whisper-api-key", whisper_api_key]
     if whisper_credentials:
         cmd += ["--whisper-credentials", whisper_credentials]
+    if captions_vtt:
+        cmd += ["--captions-vtt", captions_vtt]
     return run_step("transcribe", cmd)
 
 
@@ -212,11 +215,14 @@ def report(workdir: Path, *, no_html: bool = False, no_docx: bool = False) -> di
 
 def run_highlights(workdir: Path, prompt: str, max_n: int | None,
                    model: str | None, api_key: str | None,
-                   credentials: str | None) -> dict:
+                   credentials: str | None,
+                   provider: str | None = None) -> dict:
     cmd = [sys.executable, str(SCRIPTS_DIR / "highlights.py"), str(workdir),
            "--prompt", prompt]
     if max_n is not None:
         cmd += ["--max-n", str(max_n)]
+    if provider:
+        cmd += ["--provider", provider]
     if model:
         cmd += ["--model", model]
     if api_key:
@@ -292,8 +298,13 @@ def main() -> int:
                     help="skip transcription even if audio is present")
     ap.add_argument("--model", help="whisper model id (provider-specific; see SKILL.md)")
     ap.add_argument("--lang", help="ISO language code or 'auto'")
-    ap.add_argument("--whisper", choices=("local", "groq", "openai"), default="local",
-                    help="transcription provider. Default 'local' = faster-whisper offline. "
+    ap.add_argument("--whisper",
+                    choices=("auto", "captions", "local", "groq", "openai"),
+                    default="auto",
+                    help="transcription source. Default 'auto' picks 'captions' "
+                         "for URLs where yt-dlp pulled a VTT (free, fast), "
+                         "otherwise 'local' (faster-whisper offline). Pass an "
+                         "explicit provider to override. "
                          "'groq' / 'openai' use hosted APIs (need key, ~10x faster cold-start).")
     ap.add_argument("--whisper-api-key", default=None,
                     help="API key for hosted providers. WARNING: visible in shell history "
@@ -359,8 +370,15 @@ def main() -> int:
                     help="max number of highlights the LLM is allowed to pick (default 5)")
     ap.add_argument("--highlights-model", default=None,
                     help="Anthropic model id (default claude-haiku-4-5-20251001)")
+    ap.add_argument("--highlights-provider",
+                    choices=("anthropic", "openai", "groq"), default=None,
+                    help="LLM provider for highlights. Default: anthropic. "
+                         "'openai' and 'groq' use the openai SDK (Groq exposes "
+                         "an OpenAI-compatible endpoint).")
     ap.add_argument("--highlights-api-key", default=None,
-                    help="Anthropic API key (also reads ANTHROPIC_API_KEY env)")
+                    help="API key for the highlights provider. Reads from "
+                         "ANTHROPIC_API_KEY / OPENAI_API_KEY / GROQ_API_KEY "
+                         "env vars or credentials JSON if not set.")
     ap.add_argument("--highlights-credentials", default=None,
                     help="path to credentials JSON containing 'anthropic_api_key'. "
                          "Distinct from --credentials (which is Atlassian/Jira). "
@@ -487,10 +505,30 @@ def main() -> int:
         meta["cache"]["steps"].pop("transcribe", None)
         invalidate_downstream(meta, "transcribe")
     else:
+        # Resolve `auto` to a concrete provider. Captions are preferred when
+        # available (free + fast); otherwise fall back to local Whisper.
+        captions_vtt_path = (meta.get("video") or {}).get("captions_path")
+        effective_whisper = args.whisper
+        if effective_whisper == "auto":
+            effective_whisper = "captions" if captions_vtt_path else "local"
+        elif effective_whisper == "captions" and not captions_vtt_path:
+            die(ExitCode.BAD_INPUT,
+                "--whisper captions requested but no VTT was downloaded. "
+                "The source platform may not supply captions for this video. "
+                "Try --whisper local (or omit --whisper to auto-fall-back).")
+        emit("info", step="transcribe", resolved_provider=effective_whisper,
+             requested_provider=args.whisper,
+             captions_available=bool(captions_vtt_path))
+
         transcribe_fp_inputs = {
             "video_fp": file_fingerprint(video),
             "start": args.start, "end": args.end,
-            "whisper": args.whisper, "model": args.model, "lang": args.lang,
+            "whisper": effective_whisper,
+            "model": args.model, "lang": args.lang,
+            # Include the captions path in the fingerprint when used so a
+            # re-fetch that pulled a different captions file invalidates the
+            # transcript cache.
+            "captions_vtt": captions_vtt_path if effective_whisper == "captions" else None,
         }
         transcribe_fp = step_fingerprint("transcribe", transcribe_fp_inputs)
         transcript_outputs = [workdir / "transcript.txt", workdir / "transcript.md"]
@@ -499,10 +537,13 @@ def main() -> int:
             transcribe_info = meta.get("transcript")
         else:
             invalidate_downstream(meta, "transcribe")
-            transcribe_info = transcribe(video, workdir, args.model, args.lang,
-                                         args.start, args.end,
-                                         args.whisper, args.whisper_api_key,
-                                         args.whisper_credentials)
+            transcribe_info = transcribe(
+                video, workdir, args.model, args.lang,
+                args.start, args.end,
+                effective_whisper, args.whisper_api_key,
+                args.whisper_credentials,
+                captions_vtt=captions_vtt_path if effective_whisper == "captions" else None,
+            )
             meta["transcript"] = transcribe_info
             meta["skipped_audio_reason"] = None
             record_step(meta, "transcribe", transcribe_fp, transcript_outputs)
@@ -634,6 +675,7 @@ def main() -> int:
             # auth path, which would corrupt the Anthropic credentials loader
             # in highlights.py. Use the dedicated --highlights-credentials flag.
             credentials=args.highlights_credentials,
+            provider=args.highlights_provider,
         )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 

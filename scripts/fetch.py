@@ -69,6 +69,13 @@ def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        # Also pull captions if available -- preferring manual ("real") over
+        # auto-generated. transcribe.py can use these instead of paying for
+        # Whisper. Whisper still runs as a fallback when no captions exist.
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitlesformat": "vtt",
+        "subtitleslangs": ["en", "en-US", "en-GB"],
     }
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -93,16 +100,41 @@ def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
             die(ExitCode.IO_FAIL, f"yt-dlp succeeded but no video found in {workdir}")
         path = candidates[0]
 
+    # Locate caption file if yt-dlp pulled one. yt-dlp writes them next to the
+    # video as <stem>.<lang>.vtt; we pick the first that exists.
+    captions_path: Path | None = None
+    captions_kind: str | None = None  # "manual" | "automatic" | None
+    requested_subs = (info or {}).get("requested_subtitles") or {}
+    if requested_subs:
+        # Prefer manual over automatic; yt-dlp marks automatic ones with
+        # "_automatic_captions" provenance under info, but the simpler heuristic
+        # works: look for .vtt files written next to the video, manual first.
+        sub_candidates = sorted(
+            [p for p in workdir.iterdir() if p.is_file() and p.suffix == ".vtt"],
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if sub_candidates:
+            captions_path = sub_candidates[0]
+            # We can't easily tell manual vs automatic post-hoc; the
+            # requested_subtitles dict has _automatic flag, peek at first
+            first_lang_meta = next(iter(requested_subs.values()), {})
+            captions_kind = ("automatic"
+                             if first_lang_meta.get("_auto") else "manual")
+
     metadata = {
         "source_url": (info or {}).get("webpage_url", url),
         "title": (info or {}).get("title"),
         "uploader": (info or {}).get("uploader"),
         "extractor": (info or {}).get("extractor"),
         "upload_date": (info or {}).get("upload_date"),
+        "captions_path": str(captions_path) if captions_path else None,
+        "captions_kind": captions_kind,
     }
     emit("complete", step="yt_dlp",
          duration_seconds=round(time.time() - t0, 2),
-         output=str(path), title=metadata["title"])
+         output=str(path), title=metadata["title"],
+         captions_path=metadata["captions_path"],
+         captions_kind=metadata["captions_kind"])
     return path, metadata
 
 

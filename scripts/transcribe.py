@@ -1,12 +1,15 @@
 """Transcribe a video's audio with the chosen Whisper provider.
 
 Providers:
-  local   -- faster-whisper running on CPU. Offline, free, no API key.
-  groq    -- Groq hosted Whisper (whisper-large-v3). Cheapest+fastest hosted.
-  openai  -- OpenAI hosted Whisper (whisper-1).
+  captions -- Read VTT captions yt-dlp pulled alongside the video. Free,
+              fast, no audio extraction. Available only for URL inputs where
+              the source platform supplies captions (most YouTube content).
+  local    -- faster-whisper running on CPU. Offline, free, no API key.
+  groq     -- Groq hosted Whisper (whisper-large-v3). Cheapest+fastest hosted.
+  openai   -- OpenAI hosted Whisper (whisper-1).
 
 Output (same for all providers):
-  <workdir>/transcript.txt   -- granular, one line per Whisper segment
+  <workdir>/transcript.txt   -- granular, one line per segment
   <workdir>/transcript.md    -- prose paragraphs, ~8s max
 
 Window support (--start/--end): audio extraction is scoped to the window
@@ -15,7 +18,8 @@ video timeline.
 
 Usage:
     python transcribe.py <workdir> [--video <path>] [--lang CODE]
-                                   [--whisper local|groq|openai]
+                                   [--whisper captions|local|groq|openai]
+                                   [--captions-vtt <path>]
                                    [--model NAME]
                                    [--whisper-api-key KEY]
                                    [--whisper-credentials PATH]
@@ -26,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -68,6 +73,9 @@ class Segment:
 def pick_model_for_provider(provider: str, model_arg: str | None,
                             lang_arg: str | None) -> tuple[str, str | None]:
     """Return (model_id, language_hint). language_hint=None means auto-detect."""
+    if provider == "captions":
+        # No model, captions are the source. Language inferred from the file.
+        return "vtt-captions", (None if lang_arg in (None, "auto") else lang_arg)
     if provider == "local":
         if model_arg:
             lang = "en" if model_arg.endswith(".en") else (None if lang_arg in (None, "auto") else lang_arg)
@@ -125,6 +133,131 @@ def extract_audio(video: Path, audio_wav: Path,
         staging.unlink(missing_ok=True)
         raise
     finalize(staging, audio_wav)
+
+
+# ---- Captions provider (VTT from yt-dlp) ---------------------------------
+
+_VTT_TS = re.compile(
+    r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\.(\d{3})"
+)
+_VTT_CUE_RE = re.compile(
+    r"^\s*((?:\d{1,2}:)?\d{1,2}:\d{2}\.\d{3})\s*-->\s*"
+    r"((?:\d{1,2}:)?\d{1,2}:\d{2}\.\d{3})"
+)
+_VTT_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _vtt_ts_to_seconds(ts: str) -> float:
+    """Parse 'HH:MM:SS.mmm' or 'MM:SS.mmm' into seconds."""
+    m = _VTT_TS.match(ts.strip())
+    if not m:
+        return 0.0
+    h = int(m.group(1) or 0)
+    mm = int(m.group(2))
+    ss = int(m.group(3))
+    ms = int(m.group(4))
+    return h * 3600 + mm * 60 + ss + ms / 1000.0
+
+
+def parse_vtt(text: str) -> list[Segment]:
+    """Parse WebVTT text into a flat list of Segments.
+
+    Tolerates the variations yt-dlp produces (numbered cues, style tags,
+    speaker spans, cue settings on the timing line). Strips inline tags so
+    the output is plain prose matching what Whisper would produce.
+
+    Handles YouTube's "rolling window" auto-captions: each cue often
+    contains the previous cue's last line(s) plus newly-spoken lines, which
+    naively concatenated produces every line twice. We dedupe per cue --
+    lines that appeared in the immediately-preceding cue are dropped, so
+    the emitted text is the new content only.
+    """
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    raw_cues: list[tuple[float, float, list[str]]] = []
+    i = 0
+    # Skip the WEBVTT header line and any block of header metadata until
+    # the first blank line.
+    while i < len(lines) and lines[i].strip() != "":
+        i += 1
+    while i < len(lines):
+        line = lines[i].strip()
+        m = _VTT_CUE_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        start = _vtt_ts_to_seconds(m.group(1))
+        end = _vtt_ts_to_seconds(m.group(2))
+        i += 1
+        text_lines: list[str] = []
+        while i < len(lines) and lines[i].strip() != "":
+            cleaned = _VTT_TAG_RE.sub("", lines[i].strip())
+            if cleaned:
+                text_lines.append(cleaned)
+            i += 1
+        if text_lines:
+            raw_cues.append((start, end, text_lines))
+
+    segments: list[Segment] = []
+    prev_line_set: set[str] = set()
+    for start, end, cur_lines in raw_cues:
+        new_lines = [ln for ln in cur_lines if ln not in prev_line_set]
+        if new_lines:
+            segments.append(Segment(
+                start=start, end=end, text=" ".join(new_lines),
+            ))
+        prev_line_set = set(cur_lines)
+    return segments
+
+
+def transcribe_from_captions(workdir: Path,
+                             vtt_path: Path,
+                             window_start: float | None,
+                             window_end: float | None,
+                             ) -> tuple[list[Segment], dict]:
+    """Read VTT captions instead of running Whisper. Free, fast, no audio.
+
+    Honors --start/--end window: segments outside the window are dropped,
+    and start times are offset to make 0 = window start (matching Whisper
+    behavior so report timestamps line up with --start).
+    """
+    if not vtt_path.exists():
+        die(ExitCode.BAD_INPUT,
+            f"captions provider requested but VTT not found at {vtt_path}")
+
+    emit("start", step="transcribe", provider="captions",
+         vtt_path=str(vtt_path))
+    t0 = time.time()
+    vtt_text = vtt_path.read_text(encoding="utf-8", errors="replace")
+    all_segments = parse_vtt(vtt_text)
+
+    # VTT timestamps are in original-video time. Filter to the window but
+    # keep absolute starts -- the caller passes offset=0 to write_outputs
+    # so output timestamps match the original timeline, matching Whisper's
+    # behavior (where audio is extracted from the window and offset=start
+    # shifts back).
+    if window_start is not None or window_end is not None:
+        lo = window_start or 0.0
+        hi = window_end if window_end is not None else float("inf")
+        segments = [s for s in all_segments if s.end >= lo and s.start <= hi]
+    else:
+        segments = all_segments
+
+    # Infer language from filename (yt-dlp writes <stem>.<lang>.vtt).
+    lang = None
+    name_parts = vtt_path.name.rsplit(".", 2)
+    if len(name_parts) >= 3 and name_parts[-1] == "vtt":
+        lang = name_parts[-2].split("-")[0]  # "en-US" -> "en"
+
+    emit("complete", step="transcribe",
+         duration_seconds=round(time.time() - t0, 2),
+         segment_count=len(segments),
+         provider="captions",
+         detected_language=lang,
+         language_probability=1.0)
+    return segments, {
+        "language": lang,
+        "language_probability": 1.0,
+    }
 
 
 # ---- Local provider (faster-whisper) -------------------------------------
@@ -327,8 +460,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workdir")
     ap.add_argument("--video", help="source video (extracts audio if audio.wav missing)")
-    ap.add_argument("--whisper", choices=("local", "groq", "openai"), default="local",
-                    help="transcription provider (default: local faster-whisper)")
+    ap.add_argument("--whisper",
+                    choices=("captions", "local", "groq", "openai"),
+                    default="local",
+                    help="transcription source. 'captions' reads a VTT file "
+                         "(free, requires --captions-vtt). Others run Whisper. "
+                         "Default: local faster-whisper.")
+    ap.add_argument("--captions-vtt", default=None,
+                    help="path to VTT file for the captions provider. Usually "
+                         "supplied by the orchestrator when yt-dlp pulled "
+                         "captions during fetch.")
     ap.add_argument("--whisper-api-key", default=None,
                     help="API key for hosted providers. WARNING: visible in shell history "
                          "and process listings; do not use on shared machines or recorded "
@@ -352,8 +493,13 @@ def main() -> int:
     end = parse_time_spec(args.end)
     offset = start or 0.0
 
-    # Always regenerate audio.wav when --video is provided (correctness across windows)
-    if args.video:
+    # Captions provider: no audio extraction, no Whisper. Just parse VTT.
+    # Other providers: regenerate audio.wav when --video is provided.
+    if args.whisper == "captions":
+        if not args.captions_vtt:
+            die(ExitCode.BAD_INPUT,
+                "--whisper captions requires --captions-vtt <path>")
+    elif args.video:
         emit("start", step="audio_extract", window_start=start, window_end=end)
         t0 = time.time()
         try:
@@ -368,14 +514,23 @@ def main() -> int:
 
     model, language = pick_model_for_provider(args.whisper, args.model, args.lang)
 
-    if args.whisper == "local":
+    if args.whisper == "captions":
+        segments, info = transcribe_from_captions(
+            workdir, Path(args.captions_vtt), start, end,
+        )
+        # Captions are already windowed; pass offset=0 to write_outputs so we
+        # don't double-shift.
+        write_offset = 0.0
+    elif args.whisper == "local":
         segments, info = transcribe_local(workdir, model, language)
+        write_offset = offset
     else:
         api_key = resolve_api_key(args.whisper, args.whisper_api_key,
                                   Path(args.whisper_credentials))
         segments, info = transcribe_hosted(workdir, args.whisper, model, language, api_key)
+        write_offset = offset
 
-    write_outputs(workdir, segments, offset)
+    write_outputs(workdir, segments, write_offset)
 
     result = {
         "transcript_txt": str(workdir / "transcript.txt"),

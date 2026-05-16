@@ -35,7 +35,29 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
 
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_PROVIDER = "anthropic"
+PROVIDER_DEFAULT_MODEL = {
+    "anthropic": "claude-haiku-4-5-20251001",
+    "openai":    "gpt-4o-mini",
+    "groq":      "llama-3.1-70b-versatile",
+}
+PROVIDER_ENV_VAR = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai":    "OPENAI_API_KEY",
+    "groq":      "GROQ_API_KEY",
+}
+PROVIDER_CREDS_FIELD = {
+    "anthropic": "anthropic_api_key",
+    "openai":    "openai_api_key",
+    "groq":      "groq_api_key",
+}
+# Groq exposes an OpenAI-compatible Chat Completions endpoint; we use the
+# openai SDK with a base_url override to talk to it (avoids a separate dep).
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+# Back-compat alias -- earlier versions exported DEFAULT_MODEL referring to
+# the Anthropic default. Keep the name working for any external callers.
+DEFAULT_MODEL = PROVIDER_DEFAULT_MODEL["anthropic"]
 DEFAULT_MAX_N = 5
 DEFAULT_PROMPT = (
     "Identify the most informative or distinctive moments -- the parts a "
@@ -66,28 +88,36 @@ If nothing matches, return an empty array [].
 """
 
 
-def _load_anthropic_key(explicit: str | None, creds_path: Path) -> str:
+def _load_api_key(provider: str, explicit: str | None, creds_path: Path) -> str:
+    env_var = PROVIDER_ENV_VAR[provider]
+    creds_field = PROVIDER_CREDS_FIELD[provider]
     if explicit:
         return explicit
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return os.environ["ANTHROPIC_API_KEY"]
+    if os.environ.get(env_var):
+        return os.environ[env_var]
     if creds_path.exists():
         try:
             creds = json.loads(creds_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
             die(ExitCode.BAD_INPUT, f"{creds_path} is not valid JSON: {e}")
-        key = creds.get("anthropic_api_key")
+        key = creds.get(creds_field)
         if key:
             return key
     die(
         ExitCode.AUTH_FAIL,
-        "No Anthropic API key found. Set one of:\n"
-        "  - env var ANTHROPIC_API_KEY\n"
-        f"  - 'anthropic_api_key' field in {creds_path}\n"
+        f"No {provider} API key found. Set one of:\n"
+        f"  - env var {env_var}\n"
+        f"  - '{creds_field}' field in {creds_path}\n"
         "  - --anthropic-api-key flag (one-shot, not persisted)",
-        env_var="ANTHROPIC_API_KEY",
+        provider=provider,
+        env_var=env_var,
         creds_path=str(creds_path),
     )
+
+
+# Back-compat alias -- some callers still import _load_anthropic_key directly.
+def _load_anthropic_key(explicit: str | None, creds_path: Path) -> str:
+    return _load_api_key("anthropic", explicit, creds_path)
 
 
 def _extract_available_timestamps(transcript_text: str) -> set[str]:
@@ -139,39 +169,14 @@ def _validate_highlights(raw: list, available_timestamps: set[str]) -> list[dict
     return out
 
 
-def pick_highlights(workdir: Path, prompt: str, max_n: int, model: str,
-                    api_key: str) -> dict:
-    transcript_md = workdir / "transcript.md"
-    if not transcript_md.exists():
-        die(ExitCode.BAD_INPUT,
-            f"transcript.md not found at {transcript_md}; run watch_video.py first "
-            f"(highlights need a transcript to operate on)")
-    transcript_text = transcript_md.read_text(encoding="utf-8")
-    available_ts = _extract_available_timestamps(transcript_text)
-    if not available_ts:
-        die(ExitCode.BAD_INPUT,
-            "transcript.md has no timestamped paragraphs; nothing to highlight")
-
+def _call_anthropic(full_prompt: str, model: str, api_key: str) -> tuple[str, int | None, int | None]:
     try:
         import anthropic  # type: ignore[import-not-found]
     except ImportError:
         die(ExitCode.MISSING_DEP,
             "anthropic SDK not installed. Run: pip install --user anthropic",
             dependency="anthropic")
-
     client = anthropic.Anthropic(api_key=api_key)
-
-    full_prompt = PROMPT_TEMPLATE.format(
-        user_request=prompt.strip(),
-        transcript=transcript_text,
-        max_n=max_n,
-    )
-
-    emit("start", step="highlights",
-         model=model, max_n=max_n,
-         prompt_chars=len(prompt),
-         transcript_chars=len(transcript_text))
-    t0 = time.time()
     try:
         response = client.messages.create(
             model=model,
@@ -184,33 +189,104 @@ def pick_highlights(workdir: Path, prompt: str, max_n: int, model: str,
         die(ExitCode.IO_FAIL, f"Anthropic API error {e.status_code}: {e}")
     except anthropic.APIConnectionError as e:
         die(ExitCode.TIMEOUT, f"network error reaching Anthropic: {e}")
-
-    elapsed = round(time.time() - t0, 2)
-    response_text = ""
+    text = ""
     for block in response.content:
         if getattr(block, "type", None) == "text":
-            response_text += block.text
+            text += block.text
+    usage = getattr(response, "usage", None)
+    return text, getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None)
+
+
+def _call_openai_compatible(full_prompt: str, model: str, api_key: str,
+                            base_url: str | None) -> tuple[str, int | None, int | None]:
+    """Used for both 'openai' (no base_url) and 'groq' (base_url override).
+    Both expose the same OpenAI Chat Completions shape."""
+    try:
+        from openai import OpenAI  # type: ignore[import-not-found]
+        from openai import APIStatusError, APIConnectionError  # type: ignore[import-not-found]
+    except ImportError:
+        die(ExitCode.MISSING_DEP,
+            "openai SDK not installed. Run: pip install --user openai",
+            dependency="openai")
+    kwargs = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    client = OpenAI(**kwargs)
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": full_prompt}],
+        )
+    except APIStatusError as e:
+        if getattr(e, "status_code", None) == 401:
+            die(ExitCode.AUTH_FAIL, f"API auth failed: {e}")
+        die(ExitCode.IO_FAIL, f"API error: {e}")
+    except APIConnectionError as e:
+        die(ExitCode.TIMEOUT, f"network error: {e}")
+    text = response.choices[0].message.content or ""
+    usage = getattr(response, "usage", None)
+    return text, (getattr(usage, "prompt_tokens", None) if usage else None), \
+                 (getattr(usage, "completion_tokens", None) if usage else None)
+
+
+def pick_highlights(workdir: Path, prompt: str, max_n: int, model: str,
+                    api_key: str, provider: str = "anthropic") -> dict:
+    transcript_md = workdir / "transcript.md"
+    if not transcript_md.exists():
+        die(ExitCode.BAD_INPUT,
+            f"transcript.md not found at {transcript_md}; run watch_video.py first "
+            f"(highlights need a transcript to operate on)")
+    transcript_text = transcript_md.read_text(encoding="utf-8")
+    available_ts = _extract_available_timestamps(transcript_text)
+    if not available_ts:
+        die(ExitCode.BAD_INPUT,
+            "transcript.md has no timestamped paragraphs; nothing to highlight")
+
+    full_prompt = PROMPT_TEMPLATE.format(
+        user_request=prompt.strip(),
+        transcript=transcript_text,
+        max_n=max_n,
+    )
+
+    emit("start", step="highlights",
+         provider=provider, model=model, max_n=max_n,
+         prompt_chars=len(prompt),
+         transcript_chars=len(transcript_text))
+    t0 = time.time()
+    if provider == "anthropic":
+        response_text, tokens_in, tokens_out = _call_anthropic(full_prompt, model, api_key)
+    elif provider == "openai":
+        response_text, tokens_in, tokens_out = _call_openai_compatible(
+            full_prompt, model, api_key, base_url=None)
+    elif provider == "groq":
+        response_text, tokens_in, tokens_out = _call_openai_compatible(
+            full_prompt, model, api_key, base_url=GROQ_BASE_URL)
+    else:
+        die(ExitCode.BAD_INPUT, f"unknown highlights provider: {provider}")
+
+    elapsed = round(time.time() - t0, 2)
     response_text = _strip_code_fences(response_text)
 
     try:
         raw = json.loads(response_text)
     except json.JSONDecodeError as e:
         die(ExitCode.IO_FAIL,
-            f"Claude response was not valid JSON: {e}",
+            f"LLM response was not valid JSON: {e}",
             response_tail=response_text[-300:])
     if not isinstance(raw, list):
-        die(ExitCode.IO_FAIL, "Claude response was not a JSON array")
+        die(ExitCode.IO_FAIL, "LLM response was not a JSON array")
 
     validated = _validate_highlights(raw, available_ts)
 
-    usage = getattr(response, "usage", None)
     result = {
         "prompt": prompt,
+        "provider": provider,
         "model": model,
         "max_n": max_n,
         "elapsed_seconds": elapsed,
-        "tokens_input": getattr(usage, "input_tokens", None),
-        "tokens_output": getattr(usage, "output_tokens", None),
+        "tokens_input": tokens_in,
+        "tokens_output": tokens_out,
         "highlights": validated,
         "skipped_by_validator": len(raw) - len(validated),
     }
@@ -218,8 +294,8 @@ def pick_highlights(workdir: Path, prompt: str, max_n: int, model: str,
          duration_seconds=elapsed,
          picked=len(validated),
          skipped_by_validator=result["skipped_by_validator"],
-         tokens_input=result["tokens_input"],
-         tokens_output=result["tokens_output"])
+         tokens_input=tokens_in,
+         tokens_output=tokens_out)
     return result
 
 
@@ -483,11 +559,23 @@ def main() -> int:
                     help="user request driving the selection (default: most informative moments)")
     ap.add_argument("--max-n", type=int, default=DEFAULT_MAX_N,
                     help=f"max highlights to return (default {DEFAULT_MAX_N})")
-    ap.add_argument("--model", default=DEFAULT_MODEL,
-                    help=f"Anthropic model id (default {DEFAULT_MODEL})")
+    ap.add_argument("--provider",
+                    choices=("anthropic", "openai", "groq"),
+                    default=DEFAULT_PROVIDER,
+                    help="LLM provider for picking highlights. 'openai' and "
+                         "'groq' use the openai SDK (Groq exposes an "
+                         "OpenAI-compatible endpoint). "
+                         f"Default: {DEFAULT_PROVIDER}.")
+    ap.add_argument("--model", default=None,
+                    help="Model id. Defaults vary by provider: "
+                         f"anthropic={PROVIDER_DEFAULT_MODEL['anthropic']}, "
+                         f"openai={PROVIDER_DEFAULT_MODEL['openai']}, "
+                         f"groq={PROVIDER_DEFAULT_MODEL['groq']}.")
     ap.add_argument("--anthropic-api-key", default=None,
-                    help="API key. WARNING: visible in shell history; prefer env "
-                         "ANTHROPIC_API_KEY or credentials file.")
+                    help="API key for the chosen provider. WARNING: visible "
+                         "in shell history; prefer env var or credentials "
+                         "file. Flag name kept for back-compat; works for any "
+                         "provider.")
     ap.add_argument("--credentials", default=str(DEFAULT_CREDS_PATH),
                     help=f"credentials JSON path (default {DEFAULT_CREDS_PATH})")
     args = ap.parse_args()
@@ -496,8 +584,11 @@ def main() -> int:
     if not workdir.exists():
         die(ExitCode.BAD_INPUT, f"workdir not found: {workdir}")
 
-    api_key = _load_anthropic_key(args.anthropic_api_key, Path(args.credentials))
-    info = pick_highlights(workdir, args.prompt, args.max_n, args.model, api_key)
+    model = args.model or PROVIDER_DEFAULT_MODEL[args.provider]
+    api_key = _load_api_key(args.provider, args.anthropic_api_key,
+                            Path(args.credentials))
+    info = pick_highlights(workdir, args.prompt, args.max_n, model, api_key,
+                           provider=args.provider)
     paths = write_highlights(workdir, info)
     print(json.dumps({**info, **paths}))
     return ExitCode.OK

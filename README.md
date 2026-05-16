@@ -613,15 +613,93 @@ python scripts/watch_batch.py \
 
 20 tickets → 20 reports in ~3 minutes (parallel API for Whisper, sequential ffmpeg). Read them at your retro instead of re-watching each video.
 
-### Researching public content
+### Researching public content (free, sub-5-second)
 
 ```bash
-python scripts/watch_video.py https://www.youtube.com/watch?v=... --whisper groq
+python scripts/watch_video.py https://www.youtube.com/watch?v=...
 ```
 
-The classic. Hands you a transcript + scene-marked screenshot timeline.
+Default `--whisper auto` picks `captions` when yt-dlp pulled a VTT (most YouTube content), falling back to local Whisper otherwise. End-to-end on a 1-minute video: ~4 seconds wall-clock. Zero API cost. Transcript + frame timeline + report.md/.html/.docx.
 
-### Demo / walkthrough analysis
+### Force Whisper transcription instead of captions
+
+```bash
+python scripts/watch_video.py https://youtu.be/XYZ --whisper local
+# or for cleaner punctuation on hosted Whisper:
+python scripts/watch_video.py https://youtu.be/XYZ --whisper groq
+```
+
+Use this when caption quality is poor (e.g. heavily-accented speech, auto-captions only), or when the source has no captions at all.
+
+### Cost-conscious LLM highlights on OpenAI / Groq
+
+```bash
+python scripts/watch_video.py https://youtu.be/XYZ \
+  --highlights-prompt "summarize the key technical announcements" \
+  --highlights-provider openai --highlights-model gpt-4o-mini
+```
+
+Pick highlights using OpenAI or Groq instead of Anthropic. Useful when you have credit on one but not the other. Same JSON shape, same paste-ready Markdown / HTML output. Defaults: `claude-haiku-4-5-20251001` (anthropic), `gpt-4o-mini` (openai), `llama-3.1-70b-versatile` (groq).
+
+### Compliance / privacy-first call review
+
+```bash
+python scripts/watch_video.py confidential-call.mp4 --whisper local --no-html --no-docx
+```
+
+100% local. No video data leaves the machine. Pair with `--no-html` and `--no-docx` if your downstream system needs only the bare transcript.
+
+### CI integration: auto-analyze Playwright/Cypress failure videos
+
+```yaml
+# .github/workflows/e2e-bug-triage.yml (sketch)
+- name: Triage failed E2E runs
+  if: failure()
+  run: |
+    for vid in test-results/**/video.webm; do
+      python scripts/watch_video.py "$vid" --dedup --ocr \
+        --highlights-prompt "what failed and at what UI state"
+    done
+```
+
+Every test failure that uploads a video gets a 30-second auto-report. Frame + transcript + OCR'd UI state, ready to paste into the failure comment.
+
+### Knowledge-base ingestion
+
+```bash
+python scripts/watch_batch.py --inputs "$(find ./training-videos -name '*.mp4' | paste -sd, -)"
+```
+
+Process a backlog of internal training videos in one command. Each gets searchable transcript.md + ocr.txt — drop into Notion / Confluence / Algolia for full-text search.
+
+### Onboarding video → process checklist
+
+```bash
+python scripts/watch_video.py loom-release-walkthrough.mp4 \
+  --highlights-prompt "extract the deploy steps as a numbered checklist"
+```
+
+Record a Loom of "how we ship X", get a Markdown checklist out. The `highlights.md` lists each step with the frame showing the click + the narrator's instruction quoted.
+
+### Lecture / classroom notes
+
+```bash
+python scripts/watch_video.py "https://youtu.be/some-lecture" \
+  --highlights-prompt "extract definitions, key formulas, and worked examples"
+```
+
+A 45-minute lecture distilled to 5 anchor moments + a clean transcript. Drop the `highlights.html` into your notes app — frames + reason + quote per moment.
+
+### Loom alternative for async dev demos
+
+```bash
+python scripts/watch_video.py my-demo.mp4 --highlights-prompt "summarize the demo for someone who won't watch"
+# Share the resulting report.html (self-contained, base64 frames) with your team.
+```
+
+Record once, share the `report.html` link instead of "I'll send a 6-minute Loom." Recipients see a paste-ready summary + click-through to the original frames.
+
+### Demo / walkthrough analysis (windowed)
 
 ```bash
 python scripts/watch_video.py demo.mp4 --start 2:30 --end 3:00 --ocr
@@ -732,10 +810,17 @@ python scripts/watch_video.py PROJ-1234 --dedup --ocr \
 | `--scene-mode` | Extract frames at scene cuts (auto fallback to uniform when no scenes) |
 | `--dedup` | Smart pHash dedup with transcript-aware protection |
 | `--ocr` | Run Tesseract OCR over kept frames |
-| `--whisper local\|groq\|openai` | Transcription provider |
+| `--whisper auto\|captions\|local\|groq\|openai` | Transcription source. Default `auto`: use VTT captions if yt-dlp pulled one (free, sub-5-second), else `local` faster-whisper. Force any explicit provider to override. |
 | `--model NAME` | Whisper model id |
 | `--lang en\|pl\|...\|auto` | Audio language |
 | `--no-audio` | Skip transcription |
+| `--no-html` | Skip `report.html` (Markdown + DOCX still produced) |
+| `--no-docx` | Skip `report.docx` (degrades gracefully if `python-docx` is missing anyway) |
+| `--highlights-prompt "..."` | Enable LLM-driven highlight selection (requires an Anthropic / OpenAI / Groq key) |
+| `--highlights-provider anthropic\|openai\|groq` | Which LLM to call for highlights. Default `anthropic`. Groq uses Llama via the OpenAI-compatible endpoint. |
+| `--highlights-model NAME` | Model id (defaults vary by provider) |
+| `--highlights-api-key KEY` | API key for the chosen highlights provider (env vars also work) |
+| `--highlights-credentials PATH` | JSON file path for the highlights API key (separate from Atlassian creds) |
 | `--no-cache` | Bypass the per-step output cache |
 | `--force-step NAME[,...]` | Force a specific step (downstream auto-invalidates) |
 | `--post-to-jira` | **Opt-in only**: post `report.md` as a Jira comment. By default the Timeline section is wrapped in an ADF expand panel (click-to-show on the ticket). Pass `--post-to-jira-style summary` for a short comment with key moments + `report.html` attached; `--post-to-jira-style inline` for the legacy v1.5.0 full-inline layout. |

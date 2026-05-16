@@ -44,11 +44,19 @@ PTS_TIME_RE = re.compile(r"pts_time:\s*([0-9]+\.?[0-9]*)")
 
 
 def auto_frame_budget(duration: float) -> int:
-    if duration <= 30: return 25
-    if duration <= 60: return 25
-    if duration <= 180: return 40
-    if duration <= 600: return 60
-    return 80
+    """Frames extracted as a function of video length.
+
+    Tuned for our pipeline specifically: smart dedup (transcript-aware) drops
+    redundant frames after extraction, so we can be more frugal upfront than
+    pipelines without dedup. Curve targets ~1 frame per 4-8 seconds for short
+    videos (every narrated moment gets a visual anchor) and tapers to ~1 per
+    10-12s for long-form content.
+    """
+    if duration <= 30:  return 25   # ~1.2s per frame
+    if duration <= 60:  return 30   # ~2s per frame (was 25)
+    if duration <= 180: return 45   # ~4s per frame (was 40)
+    if duration <= 600: return 60   # ~10s per frame
+    return 80                       # caps long videos at 80; dedup further trims
 
 
 def _probe_total(ffprobe: str, video: Path) -> float:

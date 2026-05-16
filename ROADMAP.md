@@ -37,23 +37,23 @@ Confirmation gate for `post_to_jira` lives in the wrapper -- requires `confirm=t
 
 ### High leverage (do first)
 
-| # | Item | Effort | Why |
+| # | Item | Effort | Status |
 |---|---|---|---|
-| 1 | **MCP server wrapper.** Thin adapter calling existing scripts. New `mcp-server/` dir; published as `claude-watch-video-mcp` install option. | 1-2d | Doubles install surface (Claude Desktop, Codex MCP-mode, Cursor, Continue, Cline, Windsurf, Zed, VS Code Copilot Chat). |
-| 2 | **Free YouTube captions first, Whisper fallback.** `yt-dlp --write-auto-sub` before paying for hosted Whisper. | 2-3h | Real cost savings on most YouTube content. Matches bradautomates/claude-video's best feature. |
-| 3 | **GitHub Issues integration** alongside Jira. Same code structure (`fetch.py`, `post_to_jira.py` analogues). | 1d | 10x audience -- GitHub has millions of devs vs. Jira's tens of thousands. |
-| 4 | **Multi-provider highlights** (`--highlights-provider openai|anthropic|groq`). | ~2h | Unblocks users with OpenAI credit but no Anthropic key. |
-| 5 | **README "Use cases" expansion** (see Use Cases section below). | 2h | Pure marketing, no code. |
+| 1 | **MCP server wrapper.** Thin adapter calling existing scripts. New `mcp-server/` dir; published as `claude-watch-video-mcp` install option. | 1-2d | **Next up (v2.0.0).** Doubles install surface (Claude Desktop, Codex MCP-mode, Cursor, Continue, Cline, Windsurf, Zed, VS Code Copilot Chat). |
+| 2 | **Free YouTube captions first, Whisper fallback.** `yt-dlp --writesubtitles` before paying for Whisper. | 2-3h | **Shipped in v1.13.0** (7.6x speedup on YouTube vs local Whisper). |
+| 3 | **GitHub Issues integration** alongside Jira. Same code structure (`fetch.py`, `post_to_jira.py` analogues). | 1d | Planned for v2.1.0. 10x audience -- GitHub has millions of devs vs. Jira's tens of thousands. |
+| 4 | **Multi-provider highlights** (`--highlights-provider openai|anthropic|groq`). | ~2h | **Shipped in v1.13.0.** |
+| 5 | **README "Use cases" expansion**. | 2h | **Shipped in v1.13.0** -- 8 new scenarios + new-flag rows in the config table. |
 
 ### Medium leverage
 
-| # | Item | Effort | Why |
+| # | Item | Effort | Status |
 |---|---|---|---|
-| 6 | **Auto-dep installer** (`python scripts/setup.py`) -- winget/brew/apt detection. | 4h | Drops first-time friction. |
-| 7 | **Linear integration**. Same shape as Jira/GitHub Issues. | 1d | ~200k devs use Linear. Natural fit. |
-| 8 | **Adaptive frame budget by duration** (port from bradautomates' formula). | 1h | Catches up on token efficiency for long videos. |
-| 9 | **CI integration recipe** -- example GitHub Actions workflow processing Playwright/Cypress video output on test failure. | 2h | Concrete use case; drives adoption. |
-| 10 | **Slack/Discord webhook output** -- post highlights to a channel as an alternative to (or alongside) Jira. | 1d | Closes the loop for non-Jira teams. |
+| 6 | **Auto-dep installer** (`python scripts/setup.py`) -- winget/brew/apt detection. | 4h | Planned. Drops first-time friction. |
+| 7 | **Linear integration**. Same shape as Jira/GitHub Issues. | 1d | Planned for v2.1.0. ~200k devs use Linear. |
+| 8 | **Adaptive frame budget by duration**. | 1h | **Already in place** since v1.10; v1.13.0 tweaked the short-video curve and added inline rationale doc. |
+| 9 | **CI integration recipe** -- example GitHub Actions workflow processing Playwright/Cypress video output on test failure. | 2h | **Drafted in README v1.13.0 Use Cases**; a full GitHub Actions YAML lands in v2.1.0. |
+| 10 | **Slack/Discord webhook output** -- post highlights to a channel as an alternative to (or alongside) Jira. | 1d | Planned. Closes the loop for non-Jira teams. |
 
 ### Lower leverage / nice-to-have
 
@@ -96,10 +96,10 @@ Direct Claude Code video plugins (2026-05):
 
 ## Versioning notes
 
-- **v1.12.x branch** -- bug fixes, security/safety improvements, doc polish.
-- **v1.13.x** -- bring in items #2, #4, #5, #8 (low-risk improvements + doc/UX).
+- **v1.12.x branch** -- bug fixes, security/safety improvements, doc polish. (Shipped.)
+- **v1.13.0** -- items #2, #4, #5, #8: captions-first transcription, multi-provider highlights, expanded Use Cases, frame-budget tuning. (Shipped 2026-05-16.)
 - **v2.0.0** -- the MCP wrapper (item #1). New install surface justifies a major bump.
-- **v2.1+** -- GitHub Issues (#3), Linear (#7), CI recipe (#9).
+- **v2.1+** -- GitHub Issues (#3), Linear (#7), CI recipe (#9), Slack/Discord (#10).
 
 ## Sources for future reference
 

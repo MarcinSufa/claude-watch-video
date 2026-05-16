@@ -9,6 +9,8 @@ Install one-liner: `/plugin marketplace add MarcinSufa/claude-watch-video` then 
 
 ## Submission status (live tracking)
 
+### claude-watch-video
+
 | List | Status | Link |
 |---|---|---|
 | **travisvn/awesome-claude-skills** | PR open | <https://github.com/travisvn/awesome-claude-skills/pull/743> |
@@ -16,6 +18,14 @@ Install one-liner: `/plugin marketplace add MarcinSufa/claude-watch-video` then 
 | **hesreallyhim/awesome-claude-code** | Cooldown hold (repo <1wk old). Re-submit **after 2026-05-21**. | <https://github.com/hesreallyhim/awesome-claude-code/issues/1836> |
 | **ComposioHQ/awesome-claude-skills** | Skipped (their own skills monorepo, not a cross-listing index) | n/a |
 | **rohitg00/awesome-claude-code-toolkit** | Skipped (their own plugin distribution) | n/a |
+
+### git-timesheet
+
+| List | Status | Link |
+|---|---|---|
+| **travisvn/awesome-claude-skills** | PR open (filed 2026-05-16) | <https://github.com/travisvn/awesome-claude-skills/pull/744> |
+| **jqueryscript/awesome-claude-code** | PR open (filed 2026-04-22, awaiting review for 24+ days) | <https://github.com/jqueryscript/awesome-claude-code/pull/227> |
+| **hesreallyhim/awesome-claude-code** | Eligible -- repo is 24+ days old. Ready to submit via issue form (see git-timesheet packet below). | n/a |
 
 ---
 

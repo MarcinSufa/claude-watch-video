@@ -7,6 +7,76 @@ Install one-liner: `/plugin marketplace add MarcinSufa/claude-watch-video` then 
 
 ---
 
+## Submission status (live tracking)
+
+| List | Status | Link |
+|---|---|---|
+| **travisvn/awesome-claude-skills** | PR open | <https://github.com/travisvn/awesome-claude-skills/pull/743> |
+| **jqueryscript/awesome-claude-code** | PR open | <https://github.com/jqueryscript/awesome-claude-code/pull/284> |
+| **hesreallyhim/awesome-claude-code** | Pending -- must be submitted via web UI issue form (see below) | n/a |
+| **ComposioHQ/awesome-claude-skills** | Skipped (their own skills monorepo, not a cross-listing index) | n/a |
+| **rohitg00/awesome-claude-code-toolkit** | Skipped (their own plugin distribution) | n/a |
+
+---
+
+## hesreallyhim/awesome-claude-code -- manual submission required
+
+This list bans PR submissions and explicitly blocks `gh` CLI. Submission must be done via the GitHub web UI issue form by a human. Below is exact content to paste into each field.
+
+**Open this URL in your browser:**
+
+<https://github.com/hesreallyhim/awesome-claude-code/issues/new?template=recommend-resource.yml>
+
+Then fill in:
+
+| Field | Paste this |
+|---|---|
+| **Display Name** | `watch-video` |
+| **Category** | `Agent Skills` |
+| **Sub-Category** | `General` |
+| **Primary Link** | `https://github.com/MarcinSufa/claude-watch-video` |
+| **Author Name** | `Marcin Sufa` |
+| **Author Link** | `https://github.com/MarcinSufa` |
+| **License** | `MIT` |
+
+**Description** (1-3 sentences, no emojis -- they explicitly ban emojis here):
+
+```
+Watches any video (local file, public URL via yt-dlp, or Jira attachment) and produces a paste-ready evidence bundle: timestamped frames, transcript (free YouTube captions or local faster-whisper), LLM-driven highlights with a user-defined prompt, and three report formats (Markdown, self-contained HTML with base64 frames, and Word DOCX). Pipeline runs locally with zero API cost by default; smart dedup with transcript-aware protection drops 40-60 percent of redundant frames on screen recordings without losing narrated moments. Also installable as an MCP server for Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, and VS Code Copilot Chat.
+```
+
+**Validate Claims** (how a reviewer can verify the claims):
+
+```
+Install via /plugin marketplace add MarcinSufa/claude-watch-video then /plugin install watch-video@claude-watch-video. The README's two end-to-end walkthroughs document real runs with verbatim artifacts -- a 5:30 Powell FOMC press conference (https://www.youtube.com/watch?v=SVrdJINZGIM, 65 seconds wall-clock, 60 frames, 29 transcript paragraphs) and a 54-second Claude Code release video (https://www.youtube.com/watch?v=O664gH_szoY, 3.82 seconds wall-clock with captions-first transcription). The repo includes a smoketest at scripts/smoketest.py that runs a full pipeline end-to-end against a synthetic test video and asserts all stages succeed.
+```
+
+**Specific Task(s):**
+
+```
+1. Triage a Jira ticket with a screen-recording attachment: ask Claude "watch CON-1234 and identify the bug" -- the skill auto-fetches via Atlassian REST API, runs the pipeline, and Claude reads frames + transcript + OCR to answer.
+2. Summarize a long-form YouTube video against a user prompt: ask Claude "watch https://www.youtube.com/watch?v=SVrdJINZGIM and summarize the rate decision and inflation outlook" -- the skill prefers free YouTube captions over Whisper, then runs LLM-driven highlights (Anthropic/OpenAI/Groq) to pick the 5 most relevant moments with frame + reason + verbatim quote.
+3. Bulk-process a sprint of bug videos for retro: ask Claude to run watch_batch.py with --jira-jql "project = PROJ AND labels = video-bug AND created >= -7d" -- 20 tickets become 20 reports in roughly 3 minutes.
+```
+
+**Specific Prompt(s):**
+
+```
+- "Watch https://www.youtube.com/watch?v=O664gH_szoY and tell me what's new for Claude Code users."
+- "Watch CON-1234 and write a bug analysis I can paste into the Jira ticket."
+- "Watch demo.mp4 from 2:30 to 3:00 with OCR and tell me what UI state caused the error."
+```
+
+**Additional Comments** (optional but useful):
+
+```
+Latest tag: v2.0.0 (2026-05-16). Released v2.0.0 ships an MCP server wrapper so the same pipeline works in Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, and VS Code Copilot Chat -- not just Claude Code. The skill defaults to zero API cost (local ffmpeg + free YouTube captions or local Whisper); hosted Whisper and LLM-driven highlights are opt-in. Jira posting is opt-in only with a confirmation gate that runs before any attachment uploads, preserving a no-unsolicited-writes invariant.
+```
+
+**Recommendation Checklist** -- tick all five boxes after reviewing.
+
+---
+
 ## 1. Awesome-list PRs (no account warmup needed -- do these first)
 
 ### Target lists

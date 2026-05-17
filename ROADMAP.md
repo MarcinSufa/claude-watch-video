@@ -5,6 +5,15 @@ Snapshot date: 2026-05-16. Revisit after each release to re-prioritise.
 
 ---
 
+## Known limitations (as of 2026-05-17)
+
+- **MCP `watch_video` tool is unreliable on Claude Desktop + Windows.** The synchronous tool call doesn't complete; the JSON-RPC stdio pipe between server and host appears to deadlock during long-running pipelines. Verified end-to-end at the subprocess layer (the underlying pipeline completes correctly), but the host doesn't surface the result. Tracked in [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1).
+  - **Workaround:** Use the CLI directly for the pipeline (`python scripts/watch_video.py URL`), then use the MCP read tools (`read_transcript`, `read_report`, `pick_highlights`, `read_highlights`, `post_to_jira`) on the resulting workdir. The read tools work reliably across all MCP hosts.
+  - **Real fix queued for v2.1.0:** replace synchronous `watch_video` with a `watch_video_start` + `watch_video_status` polling pattern so the host never sees a single multi-second tool call. Plus a real cross-host test harness (Claude Desktop, Cursor, Cline, etc.) instead of just direct-Python tests.
+- **Claude Code plugin/skill paths are unaffected** -- they use the Bash tool to invoke the CLI directly, no JSON-RPC layer involved. That's the recommended primary install for the audience.
+
+---
+
 ## Status assessment (2026-05-17)
 
 Current rating: **~7.5/10**. Real engineering + well-positioned competitively, but bounded by distribution gaps and thin test coverage. Trajectory is steep -- yesterday it was a private repo with safety bugs; today it's v2.0.0 public with an MCP wrapper across 9 hosts.
@@ -90,7 +99,8 @@ Confirmation gate for `post_to_jira` lives in the wrapper -- requires `confirm=t
 
 | # | Item | Effort | Status |
 |---|---|---|---|
-| 1 | **MCP server wrapper.** Thin adapter calling existing scripts. New `mcp-server/` dir; published as `claude-watch-video-mcp` install option. | 1-2d | **Shipped in v2.0.0** (6 tools + 1 resource; FastMCP-based; `post_to_jira` dry-run default with explicit `confirm=True` for writes). Unlocks Claude Desktop, Codex MCP-mode, Cursor, Continue, Cline, Windsurf, Zed, VS Code Copilot Chat. |
+| 0 | **MCP `watch_video` redesign -- polling pattern.** Replace the synchronous `watch_video` tool with `watch_video_start(input, options)` returning a job id, plus `watch_video_status(job_id)` returning running/done state + meta. Host never sees a single multi-second call; no stdio-deadlock surface. Plus a cross-host test harness exercising the real MCP JSON-RPC stdio path (not just direct Python). | 1-2d | **Highest priority** -- blocks the v2.0.x MCP path from being usable in Claude Desktop. See "Known limitations" above + [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1). |
+| 1 | **MCP server wrapper.** Thin adapter calling existing scripts. New `mcp-server/` dir; published as `claude-watch-video-mcp` install option. | 1-2d | **Shipped in v2.0.0** (6 tools + 1 resource; FastMCP-based; `post_to_jira` dry-run default with explicit `confirm=True` for writes). Read tools work reliably; the `watch_video` heavy tool has the known limitation noted above. |
 | 2 | **Free YouTube captions first, Whisper fallback.** `yt-dlp --writesubtitles` before paying for Whisper. | 2-3h | **Shipped in v1.13.0** (7.6x speedup on YouTube vs local Whisper). |
 | 3 | **GitHub Issues integration** alongside Jira. Same code structure (`fetch.py`, `post_to_jira.py` analogues). | 1d | Planned for v2.1.0. 10x audience -- GitHub has millions of devs vs. Jira's tens of thousands. |
 | 4 | **Multi-provider highlights** (`--highlights-provider openai|anthropic|groq`). | ~2h | **Shipped in v1.13.0.** |

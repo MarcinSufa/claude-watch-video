@@ -72,8 +72,10 @@ def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
         # Also pull captions if available -- preferring manual ("real") over
         # auto-generated. transcribe.py can use these instead of paying for
         # Whisper. Whisper still runs as a fallback when no captions exist.
-        "writesubtitles": False,
-        "writeautomaticsub": False,
+        # The DownloadError handler below catches YouTube's 429 on the
+        # subtitle endpoint and retries with these flipped to False.
+        "writesubtitles": True,
+        "writeautomaticsub": True,
         "subtitlesformat": "vtt",
         "subtitleslangs": ["en", "en-US", "en-GB"],
     }

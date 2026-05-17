@@ -24,9 +24,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
+
+
+# Mirrors scripts/watch_video.py's DEFAULT_WORKDIR_ROOT. Used by
+# _default_workdir when the caller doesn't specify a workdir. Picking a
+# platform-appropriate root matters because Path(r"C:\tmp") is a *relative*
+# path on POSIX -- a literal C:\tmp under the server's CWD -- not /tmp.
+DEFAULT_WORKDIR_ROOT = Path("c:/tmp") if sys.platform == "win32" else Path("/tmp")
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -208,9 +217,20 @@ def _status_path(workdir: str) -> Path:
 
 
 def _write_status(workdir: str, payload: dict) -> None:
+    """Write the status file atomically.
+
+    The status file is rewritten on every state transition and may be read
+    concurrently by `watch_video_status` polls. A naive `write_text` leaves
+    a window where a reader can observe a half-written file -- `_read_status`
+    returns None on the JSONDecodeError, and the running job is mistakenly
+    reported as state="unknown". Stage to a uuid-suffixed sibling and
+    `os.replace()` for an atomic rename.
+    """
     p = _status_path(workdir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    staging = p.with_name(f"{p.name}.partial-{uuid.uuid4().hex}")
+    staging.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(staging, p)
 
 
 def _read_status(workdir: str) -> dict | None:
@@ -223,23 +243,38 @@ def _read_status(workdir: str) -> dict | None:
         return None
 
 
+_YT_VIDEO_ID_RE = re.compile(r"[?&]v=([A-Za-z0-9_-]{6,})")
+
+
 def _slug_from_input(input_ref: str) -> str:
-    """Generate a workdir slug from the input ref. Mirrors the CLI's behavior."""
-    # Extract the last URL segment, file stem, or Jira key
+    """Generate a workdir slug from the input ref.
+
+    Care points:
+    - YouTube's canonical URL is `youtube.com/watch?v=<id>`. Naively taking
+      the last path segment and stripping query string yields the literal
+      string "watch" for every YouTube video -- different inputs collide on
+      the same default workdir and race on the same _mcp_status.json. Prefer
+      the `v=` query value when present.
+    - For everything else (youtu.be/<id>, /shorts/<id>, /share/<id>, local
+      file paths, Jira keys), the last path segment is the right slug.
+    """
+    m = _YT_VIDEO_ID_RE.search(input_ref)
+    if m:
+        return m.group(1).lower()
     last = input_ref.rstrip("/").rsplit("/", 1)[-1]
     last = last.split("?")[0].split("#")[0]
-    # Strip extension
     if "." in last and not last.startswith("."):
         last = last.rsplit(".", 1)[0]
-    # Lowercase + replace invalid chars
-    import re as _re
-    slug = _re.sub(r"[^a-z0-9-]+", "-", last.lower()).strip("-")
+    slug = re.sub(r"[^a-z0-9-]+", "-", last.lower()).strip("-")
     return slug or "video"
 
 
 def _default_workdir(input_ref: str) -> str:
-    """Pick a default workdir if the caller didn't specify one."""
-    return str(Path(r"C:\tmp") / f"watch-{_slug_from_input(input_ref)}")
+    """Pick a default workdir if the caller didn't specify one.
+
+    Uses DEFAULT_WORKDIR_ROOT (platform-aware), not a hardcoded Windows path.
+    """
+    return str(DEFAULT_WORKDIR_ROOT / f"watch-{_slug_from_input(input_ref)}")
 
 
 async def _run_pipeline_and_update_status(
@@ -464,7 +499,9 @@ async def watch_video_start(
             issue key like 'PROJ-1234', or the literal 'auto' to grab the
             newest video from ~/Downloads.
         workdir: Output directory. If omitted, defaults to
-            'C:\\tmp\\watch-<slug>' where slug is derived from input_ref.
+            'C:\\tmp\\watch-<slug>' on Windows or '/tmp/watch-<slug>' on
+            POSIX, where <slug> is derived from input_ref (YouTube video id
+            when present, else last path segment).
         dedup, ocr, whisper, start, end, no_html, no_docx: same as watch_video.
 
     Returns:
@@ -477,6 +514,22 @@ async def watch_video_start(
     # Resolve workdir (job_id = workdir path).
     resolved_workdir = workdir or _default_workdir(input_ref)
     job_id = str(Path(resolved_workdir).expanduser().resolve())
+
+    # Don't spawn a second pipeline for a workdir that already has one
+    # running -- both tasks would write the same artifacts, logs, cache, and
+    # _mcp_status.json, racing each other. The natural shape here is "return
+    # the existing state, idempotently"; callers can retry status until it
+    # transitions to done/failed.
+    existing = _read_status(job_id)
+    if existing and existing.get("state") == "running":
+        return json.dumps({
+            "job_id": job_id,
+            "state": "running",
+            "started_at": existing.get("started_at"),
+            "workdir": job_id,
+            "note": ("job already running for this workdir; reusing it. "
+                     "Poll watch_video_status until the state transitions."),
+        })
 
     # Build args for the CLI subprocess.
     args = [input_ref, "--workdir", job_id]

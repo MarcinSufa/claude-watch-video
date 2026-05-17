@@ -70,6 +70,7 @@ async def test_protocol_initialize_and_list_tools(tmp_path):
             tool_names = {t.name for t in tools_result.tools}
 
     expected_minimum = {
+        "watch_video",           # deprecated but kept for back-compat (v2.0.x callers)
         "watch_video_start",     # v2.1.0 new
         "watch_video_status",    # v2.1.0 new
         "read_transcript",
@@ -82,14 +83,21 @@ async def test_protocol_initialize_and_list_tools(tmp_path):
     assert not missing, f"Missing expected tools: {missing}; got {tool_names}"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_polling_pattern_end_to_end():
+async def test_polling_pattern_end_to_end(tmp_path):
     """End-to-end: start a real pipeline via watch_video_start, poll
     watch_video_status until done, verify the result.
 
     This is the test that would have caught the v2.0.1 hang: real subprocess,
     real stdio, real JSON-RPC roundtrip. If the protocol layer is broken,
     THIS hangs or fails.
+
+    Marked as `integration` because it requires:
+      - Network access to YouTube
+      - yt-dlp + ffmpeg installed
+      - faster-whisper available (fallback when captions are rate-limited)
+    Run with: pytest -m integration. Default `pytest` runs skip it.
 
     The captions-eligible Claude Code release-notes video typically completes
     in ~5-10 seconds; we give it 60 seconds to be safe across slow machines.
@@ -98,10 +106,9 @@ async def test_polling_pattern_end_to_end():
     from mcp.client.stdio import stdio_client, StdioServerParameters
     from mcp.client.session import ClientSession
 
-    workdir = r"C:\tmp\v210-mcp-protocol-test"
-    # Pre-clean so we exercise the cold-start path.
-    import shutil
-    shutil.rmtree(workdir, ignore_errors=True)
+    # tmp_path is per-test, auto-cleaned by pytest; isolates concurrent runs
+    # and avoids leaving artifacts in C:\tmp\ or in the repo working dir.
+    workdir = str(tmp_path / "polling-test")
 
     params = StdioServerParameters(
         command=sys.executable,
@@ -182,8 +189,9 @@ async def test_polling_pattern_end_to_end():
             assert total_elapsed < 60, f"Total wall-clock exceeded 60s: {total_elapsed:.1f}s"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_background_task_is_strongly_referenced():
+async def test_background_task_is_strongly_referenced(tmp_path):
     """Regression: v2.1.0-rc2 dropped the asyncio.create_task() return value,
     which let the GC reap the awaiter mid-pipeline. Symptom: artifacts produced
     on disk, but _mcp_status.json stuck at state=running forever. Fix: hold a
@@ -196,14 +204,15 @@ async def test_background_task_is_strongly_referenced():
       2. Aggressively gc.collect() to flush any orphan task
       3. Verify the task is still registered in _background_tasks
       4. Wait for completion and verify it gets discarded on done
+
+    Marked as `integration` for the same reason as the polling test: it
+    exercises the real pipeline (network + yt-dlp + ffmpeg + Whisper).
     """
     import gc
     import importlib
 
     server_mod = importlib.import_module("server")
-    workdir = r"C:\tmp\v210-gc-regression-test"
-    import shutil
-    shutil.rmtree(workdir, ignore_errors=True)
+    workdir = str(tmp_path / "gc-regression-test")
 
     initial_count = len(server_mod._background_tasks)
 

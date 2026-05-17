@@ -2,7 +2,7 @@
 
 A measured end-to-end run of `/watch-video` against a real-world video, with full timing, token, and cost numbers. Suitable for citation in articles, blog posts, or marketing materials.
 
-> **TL;DR:** A 40-minute architecture talk → fully-analyzed architecture report with diagrams in **~5 minutes** wall-clock. **$0** pipeline cost, **~$0.05–$0.18** in agent tokens depending on model. ~**6,000× cheaper** than uploading the raw video to Claude.
+> **TL;DR:** A 40-minute architecture talk → fully-analyzed architecture report with diagrams in **~5 minutes** wall-clock. **$0** pipeline cost, **~$0.04–$0.81** in agent tokens depending on model. **Up to ~8,275× cheaper** than uploading the raw video to Claude.
 
 ## Showcase artifact
 
@@ -125,7 +125,7 @@ The "equivalent work" depends on what you're comparing -- different services del
 |---|---|---|
 | **watch-video pipeline (frames + transcript + smart dedup + OCR)** | **$0.00** | All-local; produces report.md, .html, .docx artifacts |
 | Twelve Labs Pegasus 1.2 (embedding) | ~$0.14 | $0.0035/min; vectors only -- you bring your own LLM for synthesis |
-| AWS Rekognition Video | ~$0.40 | $0.10/min for label detection; basic moderation/object detection |
+| AWS Rekognition Video | ~$4.00 | $0.10/min for label detection; basic moderation/object detection |
 | Microsoft Video Indexer (basic tier) | ~$2.00 | $0.05/min; includes transcription + face detection + OCR + scene |
 | Vimeo AI Reframe | subscription | $20-75/mo team plans; not per-video |
 

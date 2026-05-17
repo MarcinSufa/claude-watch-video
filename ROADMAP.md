@@ -7,10 +7,9 @@ Snapshot date: 2026-05-16. Revisit after each release to re-prioritise.
 
 ## Known limitations (as of 2026-05-17)
 
-- **MCP `watch_video` tool is unreliable on Claude Desktop + Windows.** The synchronous tool call doesn't complete; the JSON-RPC stdio pipe between server and host appears to deadlock during long-running pipelines. Verified end-to-end at the subprocess layer (the underlying pipeline completes correctly), but the host doesn't surface the result. Tracked in [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1).
-  - **Workaround:** Use the CLI directly for the pipeline (`python scripts/watch_video.py URL`), then use the MCP read tools (`read_transcript`, `read_report`, `pick_highlights`, `read_highlights`, `post_to_jira`) on the resulting workdir. The read tools work reliably across all MCP hosts.
-  - **Real fix queued for v2.1.0:** replace synchronous `watch_video` with a `watch_video_start` + `watch_video_status` polling pattern so the host never sees a single multi-second tool call. Plus a real cross-host test harness (Claude Desktop, Cursor, Cline, etc.) instead of just direct-Python tests.
-- **Claude Code plugin/skill paths are unaffected** -- they use the Bash tool to invoke the CLI directly, no JSON-RPC layer involved. That's the recommended primary install for the audience.
+- **MCP `watch_video` synchronous tool: deprecated** (still in the server for back-compat). Hung on Claude Desktop / Windows in v2.0.x. ✅ **Fixed in v2.1.0** by the `watch_video_start` + `watch_video_status` polling pair. Use those instead. ([#1](https://github.com/MarcinSufa/claude-watch-video/issues/1) closed.)
+- **Cold-pipeline lag on Claude Desktop / Windows: ~2-3 minutes the first run.** Caused by Windows Defender scanning the orchestrator Python subprocess on launch. The pipeline itself completes in seconds; the delay is purely Defender. ⏭️ **v2.1.1 plan:** import the pipeline as a Python module inside the MCP server's own process (`asyncio.to_thread`) instead of spawning a subprocess. Eliminates Defender's per-spawn scan entirely. CLI path is unaffected (~3-15s cold on the same machine).
+- **Claude Code plugin/skill paths are fastest** -- they use the Bash tool to invoke the CLI directly, no JSON-RPC layer. That's still the recommended primary install for Claude Code users.
 
 ---
 

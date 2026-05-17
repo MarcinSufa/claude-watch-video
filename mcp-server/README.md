@@ -1,35 +1,31 @@
 # claude-watch-video-mcp
 
-> **MCP server wrapper for the [watch-video skill](https://github.com/MarcinSufa/claude-watch-video).** Exposes the pipeline's *read tools* (transcript, report, highlights) as MCP tools in Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat, and any other MCP-speaking host.
+> **MCP server wrapper for the [watch-video skill](https://github.com/MarcinSufa/claude-watch-video).** Exposes the full pipeline (download → frames → transcribe → dedup → report) and the read tools (transcript, report, highlights) as MCP tools in Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat, and any other MCP-speaking host.
 
-The CLI scripts in [`../scripts/`](../scripts/) remain the canonical implementation. This package is a thin async wrapper around them — exposes ~6 MCP tools, no business logic duplication.
+The CLI scripts in [`../scripts/`](../scripts/) remain the canonical implementation. This package is a thin async wrapper around them — no business logic duplication.
 
 ---
 
-## ⚠️ Known limitation — `watch_video` MCP tool
+## v2.1.0 — polling pair is the supported path
 
-**The `watch_video` MCP tool is unreliable in Claude Desktop on Windows.** The synchronous tool call doesn't complete reliably; the JSON-RPC stdio pipe between the MCP server and the host appears to deadlock during long-running pipelines (verified end-to-end at the subprocess layer, but the host doesn't surface the result). This was tracked in [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1).
+The synchronous `watch_video` tool from v2.0.x is **deprecated** because it hung on Claude Desktop / Windows (see [#1](https://github.com/MarcinSufa/claude-watch-video/issues/1)). It's still in the server for back-compat but new code should call:
 
-**Recommended pattern for non-Claude-Code MCP hosts (Claude Desktop, Cursor, Cline, etc.):**
+- **`watch_video_start(input_ref, workdir=..., dedup=True, ...)`** → returns instantly with a `job_id`
+- **`watch_video_status(job_id)`** → poll every few seconds. State transitions from `running` → `done` / `failed`. Includes a `last_event` field showing the current pipeline step.
 
-1. Run the **CLI directly** for the heavy pipeline. Have the agent invoke it via its terminal/shell tool, or run it yourself in a separate window:
-   ```bash
-   python C:/Users/<you>/.claude/skills/watch-video/scripts/watch_video.py \
-     "https://www.youtube.com/watch?v=..." \
-     --workdir C:/tmp/watch-myvideo --dedup --verbose
-   ```
-2. Then use the **MCP read tools** in your conversation to pull the artifacts:
-   - `mcp__watch-video__read_transcript(workdir="C:/tmp/watch-myvideo")`
-   - `mcp__watch-video__read_report(workdir="C:/tmp/watch-myvideo")`
-   - `mcp__watch-video__pick_highlights(workdir="C:/tmp/watch-myvideo", prompt="...")`
-   - `mcp__watch-video__read_highlights(workdir="C:/tmp/watch-myvideo")`
-   - `mcp__watch-video__post_to_jira(workdir="C:/tmp/watch-myvideo")`
+When `state == "done"`, follow up with `read_transcript`, `read_report`, `pick_highlights`, etc. against the workdir from the status response.
 
-The read tools work reliably across all MCP hosts because they're lightweight (no stderr volume, no long execution). Only the `watch_video` orchestrator tool has the stdio-deadlock issue.
+### Performance expectations (Windows + Claude Desktop)
 
-**For Claude Code users:** install as a [Claude Code plugin](https://github.com/MarcinSufa/claude-watch-video#as-a-claude-code-plugin) instead — the plugin path doesn't go through MCP and works reliably.
+| Scenario | Time |
+|---|---|
+| Cold pipeline, captions available | ~2-3 min |
+| Cold pipeline, no captions (local Whisper fallback) | ~3-5 min for short videos |
+| Warm cache hit | < 1 second |
 
-**Fix queued:** v2.1.0 will replace the synchronous `watch_video` tool with a `watch_video_start` + `watch_video_status` polling pattern so the host never sees a single multi-second tool call. ETA: 1-2 days of focused work; not yet scheduled.
+The bulk of the cold time is Windows Defender scanning the orchestrator subprocess on first spawn. On Linux/macOS the same workload runs in ~3-15s. v2.1.1 will move the pipeline in-process to eliminate the outer subprocess + Defender scan.
+
+For CI, batch processing, or when you want streaming progress, the **CLI is still the fastest path** — it bypasses MCP entirely and runs in ~3-15s cold on Windows.
 
 ---
 
@@ -37,10 +33,12 @@ The read tools work reliably across all MCP hosts because they're lightweight (n
 
 | Tool | What it does | When to use |
 |---|---|---|
-| `watch_video(input_ref, ...)` ⚠️ | Run the full pipeline: download → frames → transcribe → dedup → OCR → report. | **Unreliable on Claude Desktop / Windows ([#1](https://github.com/MarcinSufa/claude-watch-video/issues/1))** — see workaround above. Use the CLI for the pipeline; come back to the read tools below for the artifacts. |
+| **`watch_video_start(input_ref, ...)`** | Start the pipeline as a background job. Returns `{job_id, state: "running", ...}` instantly. | The primary entry point. |
+| **`watch_video_status(job_id)`** | Poll job state. Returns `running` (with `last_event` + `elapsed_seconds`) or `done` (with `meta` JSON) or `failed` (with `error` text). | Call every few seconds after `watch_video_start`. |
+| `watch_video(input_ref, ...)` ⚠️ deprecated | Synchronous one-shot pipeline call. | Avoid on Claude Desktop / Windows. Kept for back-compat. Use the start/status pair instead. |
 | `read_transcript(workdir)` | Returns `transcript.md` content. | When you want just the narration. |
 | `read_report(workdir, fmt)` | Returns `report.md` / `report.html` / path to `report.docx`. | When you want the full evidence bundle. |
-| `pick_highlights(workdir, prompt, ...)` | LLM-driven moment selection with a user prompt + multi-provider (Anthropic / OpenAI / Groq). | When you want "give me only the X parts." |
+| `pick_highlights(workdir, prompt, ...)` | LLM-driven moment selection with a user prompt + multi-provider (Anthropic / OpenAI / Groq). Default model: claude-haiku-4-5. | When you want "give me only the X parts." |
 | `read_highlights(workdir)` | Returns `highlights.json`. | After `pick_highlights` ran. |
 | `post_to_jira(workdir, confirm=...)` | Posts the report to the source Jira issue. **`confirm=False` runs in dry-run; `confirm=True` writes.** | Bug-triage workflows. |
 

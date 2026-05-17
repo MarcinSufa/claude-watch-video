@@ -105,7 +105,7 @@ Most "watch a video" skills can handle YouTube and call it a day. Bug-triage wor
 
 ## Quick start
 
-> **Pick your install path:** Claude Code users get the plugin (works reliably). Everyone else uses the CLI directly (works on any platform, no host required). MCP server install is also available but the heavy `watch_video` tool has a [known limitation](mcp-server/README.md) on Claude Desktop / Windows — use the CLI for the pipeline and the MCP read tools for the artifacts.
+> **Pick your install path:** Claude Code users get the plugin (recommended). For other agents (Claude Desktop, Cursor, Cline, ...) the MCP server's `watch_video_start` + `watch_video_status` polling pair is the supported path (v2.1.0+). For CI, batch processing, or any non-agent workflow, the CLI is fastest. All three paths share the same underlying pipeline and produce identical artifacts.
 
 ### Option 1 — As a Claude Code plugin (recommended)
 
@@ -138,7 +138,7 @@ git clone https://github.com/MarcinSufa/claude-watch-video.git \
 
 Restart Claude Code; the skill auto-loads. Same engine as the plugin install — pick whichever fits your workflow.
 
-### Option 4 — As an MCP server (read tools work everywhere; `watch_video` tool unreliable, see note)
+### Option 4 — As an MCP server (Claude Desktop, Cursor, Cline, Codex CLI, ...)
 
 ```bash
 git clone https://github.com/MarcinSufa/claude-watch-video
@@ -146,7 +146,7 @@ cd claude-watch-video/mcp-server
 pip install -e .  # or pip install -e ".[full]" for all underlying CLI deps
 ```
 
-Then register the MCP server in your host. The recommended invocation is `python` + the absolute path to `server.py` — it's portable across machines and doesn't depend on the pip-generated entry point being on `PATH` (which is a real headache on Windows where pip installs to `%APPDATA%\Python\Python3xx\Scripts\` and that dir isn't on the default `PATH`).
+Then register the MCP server in your host. Recommended invocation: `python` + the absolute path to `server.py` — portable across machines and doesn't depend on the pip-generated entry point being on `PATH` (which is a Windows headache where pip installs to `%APPDATA%\Python\Python3xx\Scripts\` and that dir isn't on the default `PATH`).
 
 For Claude Desktop, edit `%APPDATA%\Claude\claude_desktop_config.json`:
 
@@ -163,9 +163,11 @@ For Claude Desktop, edit `%APPDATA%\Claude\claude_desktop_config.json`:
 
 For Codex CLI: `codex mcp add watch-video --command python --args "<absolute path to server.py>"`.
 
-If you prefer the entry-point form, you can use `claude-watch-video-mcp` directly — but only if that binary's directory is on your `PATH`. The python + server.py form sidesteps that requirement entirely.
+Then ask the agent: *"Watch <url> and tell me what's in it."* It will call `watch_video_start`, poll `watch_video_status` until done, then `read_transcript` / `read_report` / `pick_highlights` for the result.
 
-**Important — `watch_video` MCP tool limitation:** The synchronous `watch_video` MCP tool currently hangs in Claude Desktop on Windows (see [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1)). The lightweight read tools (`read_transcript`, `read_report`, `read_highlights`, `pick_highlights`, `post_to_jira`) work reliably; only the orchestrator tool has the issue. Recommended pattern: run the CLI (Option 2) for the pipeline, then use the MCP read tools for the artifacts. Full host-by-host setup + workaround details + safety contract for `post_to_jira`: [mcp-server/README.md](mcp-server/README.md).
+**Use `watch_video_start` + `watch_video_status`, not `watch_video`.** The v2.0.x synchronous `watch_video` tool hung on Claude Desktop / Windows (see [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1)) and is deprecated. v2.1.0 ships a non-blocking polling pair that works reliably on every MCP host.
+
+**Performance on Claude Desktop / Windows:** the cold pipeline takes ~2-3 min the first time you run it (the orchestrator subprocess pays a one-time Windows Defender scan; the underlying pipeline itself is fast). Subsequent runs against the same cache are near-instant. CLI (Option 2) bypasses Defender entirely and runs in ~3-15s if you need maximum speed. Full host-by-host setup + safety contract for `post_to_jira`: [mcp-server/README.md](mcp-server/README.md).
 
 The full set of capabilities is documented in [`SKILL.md`](SKILL.md). What follows in this README is the marketing tour.
 

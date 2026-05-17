@@ -105,7 +105,7 @@ Most "watch a video" skills can handle YouTube and call it a day. Bug-triage wor
 
 ## Quick start
 
-> **Pick your install path:** Claude Code users get the plugin (works reliably). Everyone else uses the CLI directly (works on any platform, no host required). MCP server install is also available but the heavy `watch_video` tool has a [known limitation](mcp-server/README.md#-known-limitation--watch_video-mcp-tool) on Claude Desktop / Windows — use the CLI for the pipeline and the MCP read tools for the artifacts.
+> **Pick your install path:** Claude Code users get the plugin (works reliably). Everyone else uses the CLI directly (works on any platform, no host required). MCP server install is also available but the heavy `watch_video` tool has a [known limitation](mcp-server/README.md) on Claude Desktop / Windows — use the CLI for the pipeline and the MCP read tools for the artifacts.
 
 ### Option 1 — As a Claude Code plugin (recommended)
 
@@ -146,7 +146,9 @@ cd claude-watch-video/mcp-server
 pip install -e .  # or pip install -e ".[full]" for all underlying CLI deps
 ```
 
-Then register `claude-watch-video-mcp` as an MCP server in your host. For Claude Desktop, edit `%APPDATA%\Claude\claude_desktop_config.json`:
+Then register the MCP server in your host. The recommended invocation is `python` + the absolute path to `server.py` — it's portable across machines and doesn't depend on the pip-generated entry point being on `PATH` (which is a real headache on Windows where pip installs to `%APPDATA%\Python\Python3xx\Scripts\` and that dir isn't on the default `PATH`).
+
+For Claude Desktop, edit `%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```json
 {
@@ -160,6 +162,8 @@ Then register `claude-watch-video-mcp` as an MCP server in your host. For Claude
 ```
 
 For Codex CLI: `codex mcp add watch-video --command python --args "<absolute path to server.py>"`.
+
+If you prefer the entry-point form, you can use `claude-watch-video-mcp` directly — but only if that binary's directory is on your `PATH`. The python + server.py form sidesteps that requirement entirely.
 
 **Important — `watch_video` MCP tool limitation:** The synchronous `watch_video` MCP tool currently hangs in Claude Desktop on Windows (see [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1)). The lightweight read tools (`read_transcript`, `read_report`, `read_highlights`, `pick_highlights`, `post_to_jira`) work reliably; only the orchestrator tool has the issue. Recommended pattern: run the CLI (Option 2) for the pipeline, then use the MCP read tools for the artifacts. Full host-by-host setup + workaround details + safety contract for `post_to_jira`: [mcp-server/README.md](mcp-server/README.md).
 

@@ -62,18 +62,19 @@ async def _spawn_script(
     """Spawn scripts/<script> with the given args. Argv-list invocation, no
     shell interpretation (injection-safe). Returns (rc, stdout, stderr).
 
-    Two important properties beyond a bare communicate() call:
+    Reads stdout and stderr concurrently via asyncio.gather. communicate()
+    buffers both pipes until the child exits, which deadlocks on Windows when
+    either pipe fills (default buffer size is small, and the pipeline emits
+    one JSON event per step on stderr). Concurrent draining keeps both pipes
+    free at the SUBPROCESS layer.
 
-    1. Streams stdout and stderr concurrently via asyncio.gather. communicate()
-       buffers both pipes until the child exits, which deadlocks on Windows
-       when either pipe fills (default buffer size is small, and our pipeline
-       emits one JSON event per step on stderr). Concurrent draining keeps
-       both pipes free.
-
-    2. When ctx is provided (FastMCP Context object passed from a tool call),
-       each structured JSON event the CLI writes on stderr is forwarded as
-       an MCP progress notification. The host (Claude Desktop, Cursor, etc.)
-       displays live feedback so a 30-second pipeline doesn't look like a hang.
+    ``ctx`` is accepted as a parameter for forward compatibility but is no
+    longer used for per-event progress notifications -- doing that introduced
+    a *second* pipe-buffer deadlock at the SERVER-TO-HOST layer (Claude
+    Desktop doesn't drain the MCP server's stdout while a tool call is in
+    flight; await ctx.info(...) blocks waiting for buffer space, the pump
+    task hangs, gather() never resolves, the tool call never returns). The
+    proper fix is the v2.1.0 polling pattern; see ROADMAP.md.
     """
     argv = [sys.executable, str(SCRIPTS_DIR / script), *args]
     proc = await asyncio.create_subprocess_exec(

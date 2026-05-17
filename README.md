@@ -297,22 +297,63 @@ The only token cost is when an agent (Claude Code, Claude Desktop, Cursor, etc.)
 
 ### How that compares
 
-Cost per **minute of video** for the equivalent end-to-end work (transcribe + visual frames + language-model summary):
+Three tiers depending on what equivalent work you're actually buying. All costs normalized to **one minute of video**.
 
-| Service | $/min video | What you get back | Where the video goes |
+**Tier 1 -- transcription only (audio → text, no frames, no summary)**
+
+| Service | $/min | Where it goes |
+|---|---|---|
+| **watch-video (captions-first or local Whisper)** | **$0.000** | **Stays local** |
+| Groq Whisper API | ~$0.002 | Groq |
+| Deepgram Nova-3 | ~$0.004 | Deepgram |
+| OpenAI Whisper-1 API | ~$0.006 | OpenAI |
+| AssemblyAI Universal-2 | ~$0.006 | AssemblyAI |
+| AWS Transcribe | ~$0.024 | AWS |
+| Google Cloud Speech-to-Text | ~$0.024 | Google |
+| Azure Speech-to-Text | ~$0.017 | Microsoft |
+
+**Tier 2 -- transcript + visual frames (no language synthesis)**
+
+| Service | $/min | Notes |
+|---|---|---|
+| **watch-video pipeline (frames + transcript + dedup + OCR)** | **$0.000** | All local; produces report.md / .html / .docx |
+| Twelve Labs Pegasus 1.2 (embedding) | ~$0.004 | Vectors only, no text output |
+| Microsoft Video Indexer (basic) | ~$0.050 | Includes transcription + face + scene + basic OCR |
+| AWS Rekognition Video (labels only) | ~$0.010 | Object/label detection, no transcript |
+
+**Tier 3 -- full pipeline (transcript + frames + structured LLM summary)**
+
+This is what the [Atlassian case study](docs/cost-study-atlassian-video.md) actually delivers.
+
+| Service | $/min | What you get | Where the video goes |
 |---|---|---|---|
-| **watch-video + Claude Haiku** | **~$0.015** | Pipeline free; agent reads via Haiku | **Stays local** |
-| **watch-video + Claude Sonnet** | ~$0.05 | Same, better quality answer | **Stays local** |
-| Twelve Labs Pegasus | ~$0.003 | Embedding vectors only, no language output | Sent to Twelve Labs |
-| AssemblyAI transcription | ~$0.006 | Transcript only, no frames | Sent to AssemblyAI |
-| Gemini 3 native video | ~$0.02 | One API call, multimodal answer | Sent to Google |
-| OpenAI Whisper + GPT-4o vision | ~$0.10 | Multi-API DIY equivalent | Sent to OpenAI |
-| Microsoft Video Indexer | ~$0.05 | Full enterprise analysis pipeline | Sent to Azure |
-| **Anthropic Claude raw video upload** | **~$5-7** | Send video as frames at 30fps | Sent to Anthropic |
+| **watch-video + Claude Haiku 4.5** | **~$0.001** | Local pipeline + structured analysis | **Local pipeline; transcript only to Anthropic** |
+| **watch-video + Claude Sonnet 4.6** | **~$0.004** | Same, better narrative quality | **Local pipeline; transcript only to Anthropic** |
+| Gemini 3 Flash native video upload | ~$0.008-0.013 | One API call, multimodal answer | Google |
+| Gemini 3 Pro native video upload | ~$0.013-0.025 | Same, larger model | Google |
+| Anthropic Claude Haiku raw video upload | ~$0.42 | 30 fps frame tokenization | Anthropic |
+| Anthropic Claude Sonnet raw video upload | ~$1.65 | Same, $3/M input | Anthropic |
+| **Anthropic Claude Opus raw video upload** | **~$8.30** | 30 fps × $15/M Opus input | Anthropic |
+| OpenAI Whisper + GPT-4o vision DIY | ~$0.10 | Multi-API: Whisper + per-frame GPT-4o | OpenAI |
+| Microsoft Video Indexer (advanced) | ~$0.20 | Full enterprise analysis | Microsoft |
+| Symbl.ai conversation intelligence | ~$0.10 | Conversation-focused | Symbl |
 
-### The ~300× headline
+### The headline numbers
 
-If you sent the same 54-second YouTube release video to Claude as a raw video upload (Opus pricing, 30 fps frame tokenization), you'd pay around **$7.50 per video**. The watch-video pipeline smart-dedups 1,620 raw frames down to ~16 keepers, has the agent read just 4-8 strategically, and produces the same answer for **under $0.25** — a **~300× reduction in token cost** on the same model.
+Compared per-tier to the cheapest credible alternative:
+
+| Compare watch-video + Haiku ($0.001/min) to... | They charge | Cheaper by |
+|---|---|---|
+| Cheapest dedicated transcription API (Groq Whisper) | $0.002/min | ~2× — *and we deliver transcript + frames + analysis, not just transcript* |
+| Cheapest multimodal video LLM (Gemini 3 Flash) | $0.008/min | **~7×** |
+| OpenAI Whisper + GPT-4o vision DIY pipeline | $0.10/min | **~95×** |
+| Microsoft Video Indexer (advanced) | $0.20/min | **~190×** |
+| Anthropic Claude Sonnet raw video upload | $1.65/min | **~1,570×** |
+| Anthropic Claude Opus raw video upload | $8.30/min | **~7,900×** |
+
+Even comparing **Sonnet-tier output quality** (watch-video + Sonnet at $0.004/min) to peers, you save 2-410× depending on the alternative.
+
+The Anthropic-raw-upload comparison is the cleanest apples-to-apples on output quality (same Claude model reads the same content). The 30 fps frame tokenization makes that path uneconomic by 400-8,000×.
 
 ### Real-world case study: 40-minute Atlassian engineering talk
 

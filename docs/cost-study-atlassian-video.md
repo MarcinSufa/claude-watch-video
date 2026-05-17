@@ -102,29 +102,109 @@ For most production use cases, **Haiku is the right choice for the agent layer**
 
 ## Cost comparison vs alternatives
 
-For the equivalent end-to-end work (transcribe + visual frames + structured language summary):
+The "equivalent work" depends on what you're comparing -- different services deliver different output shapes. Three tiers, same 40-minute video.
 
-| Service | $/this 40-min video | What you get | Where the video goes |
+### Tier 1 -- Transcription only (no visual, no semantic analysis)
+
+| Service | $/40-min video | Notes |
+|---|---|---|
+| **watch-video (captions-first)** | **$0.00** | Free YouTube/platform VTT when available |
+| **watch-video (local faster-whisper)** | **$0.00** | Offline, CPU; ~3-4 min wall-clock on this video |
+| Groq Whisper API (`whisper-large-v3`) | ~$0.07 | $0.111/hr, fastest hosted option |
+| Deepgram Nova-3 | ~$0.17 | $0.0043/min general |
+| OpenAI Whisper-1 API | ~$0.24 | $0.006/min |
+| AssemblyAI Universal-2 | ~$0.25 | $0.37/hr Pay-As-You-Go |
+| AWS Transcribe (standard) | ~$0.96 | $0.024/min |
+| Azure Speech-to-Text (standard) | ~$0.67 | $1.00/hr |
+| Google Cloud Speech-to-Text (standard) | ~$0.96 | $0.024/min |
+| Rev.ai (AI model) | ~$0.40-0.80 | $0.02/min API, more for human |
+
+### Tier 2 -- Transcript + visual context (no language synthesis)
+
+| Service | $/40-min video | Notes |
+|---|---|---|
+| **watch-video pipeline (frames + transcript + smart dedup + OCR)** | **$0.00** | All-local; produces report.md, .html, .docx artifacts |
+| Twelve Labs Pegasus 1.2 (embedding) | ~$0.14 | $0.0035/min; vectors only -- you bring your own LLM for synthesis |
+| AWS Rekognition Video | ~$0.40 | $0.10/min for label detection; basic moderation/object detection |
+| Microsoft Video Indexer (basic tier) | ~$2.00 | $0.05/min; includes transcription + face detection + OCR + scene |
+| Vimeo AI Reframe | subscription | $20-75/mo team plans; not per-video |
+
+### Tier 3 -- Full pipeline (transcript + frames + structured LLM summary)
+
+This is what the Atlassian architecture report actually delivers.
+
+| Service | $/40-min video | Where it goes | What you get back |
 |---|---|---|---|
-| **watch-video + Claude Haiku** | **~$0.04** | Full pipeline + architecture report | **Stays local** |
-| **watch-video + Claude Sonnet** | ~$0.16 | Same, better narrative quality | **Stays local** |
-| **watch-video + Claude Opus** | ~$0.81 | Same, top-quality reasoning | **Stays local** |
-| Twelve Labs Pegasus | ~$0.14 | Embedding vectors only, no language output | Sent to Twelve Labs |
-| AssemblyAI transcription only | ~$0.24 | Transcript only, no frames | Sent to AssemblyAI |
-| Gemini 3 native video upload | ~$0.80 | One API call, multimodal answer | Sent to Google |
-| OpenAI Whisper + GPT-4o vision (DIY) | ~$4–5 | Multi-API DIY pipeline | Sent to OpenAI |
-| Microsoft Video Indexer | ~$2 | Full enterprise pipeline | Sent to Azure |
-| **Anthropic Claude raw video upload** | **~$330–400** | Send video as 30 fps frames | Sent to Anthropic |
+| **watch-video + Claude Haiku 4.5 read** | **~$0.04** | **Local pipeline; transcript-only goes to Anthropic** | Full architecture report with structured analysis |
+| **watch-video + Claude Sonnet 4.6 read** | **~$0.16** | **Local pipeline; transcript-only goes to Anthropic** | Same, better narrative quality |
+| **watch-video + Claude Opus 4.7 read** | **~$0.81** | **Local pipeline; transcript-only goes to Anthropic** | Same, top-quality reasoning |
+| Gemini 3 Flash native video upload | ~$0.15-0.50 | Google | Single API call, multimodal answer; ~263 tokens/sec video tokenization |
+| Gemini 3 Pro native video upload | ~$0.50-1.00 | Google | Same, larger model |
+| Anthropic Claude Haiku raw video upload | ~$17 | Anthropic | Send video as 30 fps frames; 22M input tokens × $0.80/M |
+| Anthropic Claude Sonnet raw video upload | ~$66 | Anthropic | 22M input tokens × $3/M |
+| **Anthropic Claude Opus raw video upload** | **~$330** | Anthropic | 22M input tokens × $15/M; **the comparison point** |
+| OpenAI Whisper + GPT-4o vision (DIY pipeline) | ~$4-5 | OpenAI | Multi-API: Whisper for audio + GPT-4o for each frame |
+| Microsoft Video Indexer (advanced tier) | ~$8 | Azure | $0.20/min full enterprise pipeline |
+| Symbl.ai | ~$4 | Symbl | $0.10/min conversation intelligence |
+| ChatGPT consumer (manual upload) | not supported | -- | No video upload in consumer app |
 
-The Anthropic-raw-upload number is the critical one for the headline:
+### Subscription services (not per-video; flat monthly fee)
+
+For comparison if your use case is recurring rather than ad-hoc:
+
+| Service | $/month | Best for |
+|---|---|---|
+| Otter.ai Pro | $16.99 | Meeting transcription, no video frames |
+| Fireflies.ai Pro | $10-19 | Meeting summaries, integrates with Zoom/Meet |
+| Loom AI | $16-25 | Recording + auto-summary in same flow |
+| Krisp | $16 | Real-time transcription + noise cancellation |
+| Notta Pro | $14-25 | Multi-language transcription |
+
+These are mostly meeting-focused and don't have an API or batch mode comparable to watch-video's CLI.
+
+### The Anthropic raw-upload math (for the article headline)
+
+The 30fps × 40min upload to Claude as native video:
+
 - 40 min × 60 s × 30 fps = **72,000 frames**
-- Per Anthropic's image tokenizer: 72,000 × (640×360/750) = **~22.1M input tokens**
-- At Opus pricing: 22.1M × $15/M = **$331 input**
-- Add minimal output, you're at **~$330–400** total
+- Per Anthropic's image tokenizer: 72,000 × (640×360 / 750) = **~22.1M input tokens**
+- Plus ~5K output tokens
 
-**watch-video's ratio: $0.16 (Sonnet) vs $331 (raw upload) = ~2,070× cheaper.**
+| Model | Input rate | This run input cost | Total (input + output) |
+|---|---|---|---|
+| Haiku 4.5 | $0.80 / M | $17.68 | **~$17** |
+| Sonnet 4.6 | $3.00 / M | $66.30 | **~$66** |
+| Opus 4.7 | $15.00 / M | $331.50 | **~$331** |
 
-**Or: $0.04 (Haiku) vs $331 = ~8,275× cheaper.** Headline number: **~6,000-8,000× cheaper** depending on which model you compare to.
+**watch-video ratios (same input, structurally equivalent output):**
+
+| Comparison | watch-video cost | Raw-upload cost | Cheaper by |
+|---|---|---|---|
+| Both on Haiku | $0.04 | $17 | **~420×** |
+| Both on Sonnet | $0.16 | $66 | **~410×** |
+| Both on Opus | $0.81 | $331 | **~410×** |
+
+**Vs Anthropic Opus raw upload specifically (the worst case you'd avoid):** Haiku is **~8,275× cheaper**, Sonnet is **~2,070× cheaper**, Opus is **~408× cheaper**.
+
+### Vs other multimodal video offerings
+
+| Multimodal video provider | $/40-min video | watch-video equivalent (Haiku) | Cheaper by |
+|---|---|---|---|
+| Gemini 3 Flash native | ~$0.30 | $0.04 | ~7× |
+| Gemini 3 Pro native | ~$0.80 | $0.04 | ~20× |
+| OpenAI Whisper + GPT-4o pipeline | ~$4.50 | $0.04 | ~112× |
+| Microsoft Video Indexer (advanced) | ~$8 | $0.04 | ~200× |
+| Anthropic Opus raw upload | $331 | $0.04 | ~8,275× |
+
+### Why the gap exists
+
+It's not magic. It's three engineering choices stacked:
+
+1. **Captions-first transcription.** YouTube + Loom + Vimeo provide free VTT captions. We use them when they exist. **Free.**
+2. **Smart dedup with transcript-aware protection.** Instead of 72,000 frames, the pipeline keeps ~80, dropping ~99.9% of them as visually-redundant. **No information lost** because every narrated moment gets a protected frame.
+3. **Strategic frame sampling at read time.** The agent reads 5-8 frames out of 80, picked to land on each distinct visual moment. **You pay for 5 frames, not 80.**
+
+The math is dominated by step 2 -- the 99.9% frame reduction. Anthropic's video billing assumes you genuinely need every frame. For watch-and-summarize workloads (talks, demos, bug repros), you don't.
 
 ## Why this works (technical summary)
 

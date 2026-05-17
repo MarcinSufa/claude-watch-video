@@ -456,6 +456,76 @@ def write_outputs(workdir: Path, segments: Iterable[Segment], offset: float) -> 
 
 # ---- Entry point ---------------------------------------------------------
 
+def run_inproc(
+    workdir: Path,
+    video: str | None = None,
+    whisper: str = "local",
+    captions_vtt: str | None = None,
+    whisper_api_key: str | None = None,
+    whisper_credentials: str | None = None,
+    model_name: str | None = None,
+    lang: str | None = None,
+    start_spec: str | None = None,
+    end_spec: str | None = None,
+) -> dict:
+    """Pure function for in-process invocation. See probe.run_inproc docstring."""
+    workdir = workdir.resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    audio_wav = workdir / "audio.wav"
+    if whisper_credentials is None:
+        whisper_credentials = str(DEFAULT_CREDS_PATH)
+
+    start = parse_time_spec(start_spec)
+    end = parse_time_spec(end_spec)
+    offset = start or 0.0
+
+    if whisper == "captions":
+        if not captions_vtt:
+            die(ExitCode.BAD_INPUT,
+                "whisper=captions requires captions_vtt path")
+    elif video:
+        emit("start", step="audio_extract", window_start=start, window_end=end)
+        t0 = time.time()
+        try:
+            extract_audio(Path(video), audio_wav, start, end)
+        except subprocess.CalledProcessError as e:
+            die(ExitCode.IO_FAIL, f"audio extraction failed: {e}")
+        emit("complete", step="audio_extract",
+             duration_seconds=round(time.time() - t0, 2),
+             output=str(audio_wav))
+    elif not audio_wav.exists():
+        die(ExitCode.BAD_INPUT, "audio.wav missing and video not provided")
+
+    model, language = pick_model_for_provider(whisper, model_name, lang)
+
+    if whisper == "captions":
+        segments, info = transcribe_from_captions(
+            workdir, Path(captions_vtt), start, end,
+        )
+        write_offset = 0.0
+    elif whisper == "local":
+        segments, info = transcribe_local(workdir, model, language)
+        write_offset = offset
+    else:
+        api_key = resolve_api_key(whisper, whisper_api_key,
+                                  Path(whisper_credentials))
+        segments, info = transcribe_hosted(workdir, whisper, model, language, api_key)
+        write_offset = offset
+
+    write_outputs(workdir, segments, write_offset)
+
+    return {
+        "transcript_txt": str(workdir / "transcript.txt"),
+        "transcript_md": str(workdir / "transcript.md"),
+        "segments": len(segments),
+        "language": info["language"],
+        "language_probability": info["language_probability"],
+        "offset_seconds": offset,
+        "provider": whisper,
+        "model": model,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workdir")
@@ -484,64 +554,18 @@ def main() -> int:
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
     args = ap.parse_args()
-
-    workdir = Path(args.workdir).resolve()
-    workdir.mkdir(parents=True, exist_ok=True)
-    audio_wav = workdir / "audio.wav"
-
-    start = parse_time_spec(args.start)
-    end = parse_time_spec(args.end)
-    offset = start or 0.0
-
-    # Captions provider: no audio extraction, no Whisper. Just parse VTT.
-    # Other providers: regenerate audio.wav when --video is provided.
-    if args.whisper == "captions":
-        if not args.captions_vtt:
-            die(ExitCode.BAD_INPUT,
-                "--whisper captions requires --captions-vtt <path>")
-    elif args.video:
-        emit("start", step="audio_extract", window_start=start, window_end=end)
-        t0 = time.time()
-        try:
-            extract_audio(Path(args.video), audio_wav, start, end)
-        except subprocess.CalledProcessError as e:
-            die(ExitCode.IO_FAIL, f"audio extraction failed: {e}")
-        emit("complete", step="audio_extract",
-             duration_seconds=round(time.time() - t0, 2),
-             output=str(audio_wav))
-    elif not audio_wav.exists():
-        die(ExitCode.BAD_INPUT, "audio.wav missing and --video not provided")
-
-    model, language = pick_model_for_provider(args.whisper, args.model, args.lang)
-
-    if args.whisper == "captions":
-        segments, info = transcribe_from_captions(
-            workdir, Path(args.captions_vtt), start, end,
-        )
-        # Captions are already windowed; pass offset=0 to write_outputs so we
-        # don't double-shift.
-        write_offset = 0.0
-    elif args.whisper == "local":
-        segments, info = transcribe_local(workdir, model, language)
-        write_offset = offset
-    else:
-        api_key = resolve_api_key(args.whisper, args.whisper_api_key,
-                                  Path(args.whisper_credentials))
-        segments, info = transcribe_hosted(workdir, args.whisper, model, language, api_key)
-        write_offset = offset
-
-    write_outputs(workdir, segments, write_offset)
-
-    result = {
-        "transcript_txt": str(workdir / "transcript.txt"),
-        "transcript_md": str(workdir / "transcript.md"),
-        "segments": len(segments),
-        "language": info["language"],
-        "language_probability": info["language_probability"],
-        "offset_seconds": offset,
-        "provider": args.whisper,
-        "model": model,
-    }
+    result = run_inproc(
+        workdir=Path(args.workdir),
+        video=args.video,
+        whisper=args.whisper,
+        captions_vtt=args.captions_vtt,
+        whisper_api_key=args.whisper_api_key,
+        whisper_credentials=args.whisper_credentials,
+        model_name=args.model,
+        lang=args.lang,
+        start_spec=args.start,
+        end_spec=args.end,
+    )
     print(json.dumps(result))
     return ExitCode.OK
 

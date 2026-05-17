@@ -158,6 +158,28 @@ def dedup(workdir: Path, threshold: int, min_interval: float,
     return meta
 
 
+def run_inproc(
+    workdir: Path,
+    threshold: int = 5,
+    min_interval: float = 5.0,
+    protect_window: float = 1.5,
+) -> dict:
+    """Pure function for in-process invocation. See probe.run_inproc docstring."""
+    workdir = workdir.resolve()
+    if not workdir.exists():
+        die(ExitCode.BAD_INPUT, f"workdir not found: {workdir}")
+
+    t0 = time.time()
+    meta = dedup(workdir, threshold, min_interval, protect_window)
+    dedup_info = (meta.get("frames", {}) or {}).get("dedup", {})
+
+    return {
+        "frame_count": meta.get("frames", {}).get("frame_count"),
+        "dedup": dedup_info,
+        "elapsed_seconds": round(time.time() - t0, 2),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workdir")
@@ -168,20 +190,13 @@ def main() -> int:
     ap.add_argument("--protect-window", type=float, default=1.5,
                     help="seconds around transcript paragraph timestamps where frames are protected (default 1.5)")
     args = ap.parse_args()
-
-    workdir = Path(args.workdir).resolve()
-    if not workdir.exists():
-        die(ExitCode.BAD_INPUT, f"workdir not found: {workdir}")
-
-    t0 = time.time()
-    meta = dedup(workdir, args.threshold, args.min_interval, args.protect_window)
-    dedup_info = (meta.get("frames", {}) or {}).get("dedup", {})
-
-    print(json.dumps({
-        "frame_count": meta.get("frames", {}).get("frame_count"),
-        "dedup": dedup_info,
-        "elapsed_seconds": round(time.time() - t0, 2),
-    }))
+    result = run_inproc(
+        workdir=Path(args.workdir),
+        threshold=args.threshold,
+        min_interval=args.min_interval,
+        protect_window=args.protect_window,
+    )
+    print(json.dumps(result))
     return ExitCode.OK
 
 

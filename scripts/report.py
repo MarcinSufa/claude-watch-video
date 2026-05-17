@@ -606,6 +606,29 @@ def generate(workdir: Path, *, write_html: bool = True, write_docx: bool = True)
     }
 
 
+def run_inproc(
+    workdir: Path,
+    no_html: bool = False,
+    no_docx: bool = False,
+) -> dict:
+    """Pure function for in-process invocation. See probe.run_inproc docstring."""
+    workdir = workdir.resolve()
+    if not workdir.exists():
+        die(ExitCode.BAD_INPUT, f"workdir not found: {workdir}")
+
+    emit("start", step="report", workdir=str(workdir),
+         write_html=(not no_html), write_docx=(not no_docx))
+    t0 = time.time()
+    result = generate(workdir,
+                      write_html=(not no_html),
+                      write_docx=(not no_docx))
+    emit("complete", step="report", duration_seconds=round(time.time() - t0, 2),
+         report_path=result["report_path"],
+         html_path=result["html_path"],
+         docx_path=result["docx_path"])
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workdir")
@@ -618,22 +641,11 @@ def main() -> int:
                          "format (best for corporate workflows where the report gets "
                          "redlined / shared via Outlook). Requires python-docx.")
     args = ap.parse_args()
-
-    workdir = Path(args.workdir).resolve()
-    if not workdir.exists():
-        die(ExitCode.BAD_INPUT, f"workdir not found: {workdir}")
-
-    emit("start", step="report", workdir=str(workdir),
-         write_html=(not args.no_html), write_docx=(not args.no_docx))
-    t0 = time.time()
-    result = generate(workdir,
-                      write_html=(not args.no_html),
-                      write_docx=(not args.no_docx))
-    emit("complete", step="report", duration_seconds=round(time.time() - t0, 2),
-         report_path=result["report_path"],
-         html_path=result["html_path"],
-         docx_path=result["docx_path"])
-
+    result = run_inproc(
+        workdir=Path(args.workdir),
+        no_html=args.no_html,
+        no_docx=args.no_docx,
+    )
     print(json.dumps(result))
     return ExitCode.OK
 

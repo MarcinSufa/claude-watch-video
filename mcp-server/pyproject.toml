@@ -1,7 +1,7 @@
 [project]
 name = "claude-watch-video-mcp"
-version = "2.0.2"
-description = "MCP server wrapper for the watch-video skill. Exposes the pipeline's read tools (transcript, report, highlights) and an opt-in Jira-posting tool to MCP hosts (Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat). Heavy orchestrator tool is currently unreliable on Claude Desktop/Windows; see README for the CLI workaround."
+version = "2.1.0"
+description = "MCP server wrapper for the watch-video skill. Exposes watch_video_start + watch_video_status (non-blocking polling pair, v2.1.0+) plus the pipeline's read tools (transcript, report, highlights) and an opt-in Jira-posting tool to MCP hosts (Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat)."
 readme = "README.md"
 authors = [
     { name = "Marcin Sufa", email = "sufa.marcin@gmail.com" },
@@ -56,3 +56,13 @@ only-include = ["server.py"]
 
 [tool.hatch.build.targets.sdist]
 include = ["server.py", "README.md"]
+
+[tool.pytest.ini_options]
+# Custom markers. Default test run skips `integration` because those tests
+# require network access, yt-dlp/ffmpeg/faster-whisper installed, and run
+# the real pipeline (slow + flaky against rate-limited remote videos).
+# Run them explicitly with: pytest -m integration
+markers = [
+    "integration: requires network + yt-dlp + ffmpeg + faster-whisper (slow, opt-in)",
+]
+addopts = "-m 'not integration'"

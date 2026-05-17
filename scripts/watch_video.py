@@ -80,14 +80,81 @@ def default_workdir(kind: str, value: str) -> Path:
 
 # ---- Sub-script invocation -----------------------------------------------
 
+# Workdir for run_step log files. Set by main() ONLY when WATCH_VIDEO_NO_PIPE
+# is in the environment (set by the MCP server). When set, run_step writes
+# each sub-script's stdout/stderr directly to disk files in this dir instead
+# of using subprocess.PIPE + a threaded pump. Reason: when this orchestrator
+# runs as a sub-subprocess of the MCP server's asyncio event loop, the kernel
+# pipe between this process and each sub-script suffers 10-75 second drain
+# latency -- the parent's loop is busy serving status polls and the OS
+# scheduler underprioritizes the pipe drain. Log files have no buffer ceiling
+# and no drain contention. CLI and skill paths leave this None and keep the
+# original pump-based live streaming.
+_STEP_LOGS_DIR: Path | None = None
+
+
+def _maybe_enable_log_file_mode(workdir: Path) -> None:
+    """Call once from main() after workdir is resolved."""
+    global _STEP_LOGS_DIR
+    if os.environ.get("WATCH_VIDEO_NO_PIPE"):
+        _STEP_LOGS_DIR = workdir / "_step_logs"
+        _STEP_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _run_step_via_log_files(name: str, cmd: list[str]) -> dict:
+    """Variant of run_step used in MCP context. No PIPE, no threads.
+
+    Trade-off: live progress streaming during a single step is lost (events
+    are flushed to parent stderr only after the step exits). Per-step
+    duration is short (<3s typically), so the perceived liveness loss is
+    minor compared to the 10-75s/step regression PIPE causes here.
+    """
+    assert _STEP_LOGS_DIR is not None
+    log_out = _STEP_LOGS_DIR / f"{name}.stdout.log"
+    log_err = _STEP_LOGS_DIR / f"{name}.stderr.log"
+    # Truncate per-step so each file reflects only the latest run.
+    log_out.write_bytes(b"")
+    log_err.write_bytes(b"")
+
+    with open(log_out, "wb", buffering=0) as out_f, \
+         open(log_err, "wb", buffering=0) as err_f:
+        proc = subprocess.Popen(cmd, stdout=out_f, stderr=err_f)
+        rc = proc.wait()
+
+    stdout_data = log_out.read_text(encoding="utf-8", errors="replace")
+    stderr_data = log_err.read_text(encoding="utf-8", errors="replace")
+
+    # Bubble child stderr up to our own stderr so events still reach the
+    # MCP server's _mcp_stderr.log (just batched per step, not line-by-line).
+    if stderr_data:
+        sys.stderr.write(stderr_data)
+        sys.stderr.flush()
+
+    if rc != 0:
+        if stdout_data:
+            sys.stdout.write(stdout_data)
+            sys.stdout.flush()
+        sys.exit(rc)
+    if not stdout_data.strip():
+        die(ExitCode.IO_FAIL, f"step {name} produced no output")
+    return json.loads(stdout_data.strip().splitlines()[-1])
+
+
 def run_step(name: str, cmd: list[str]) -> dict:
-    """Run a sub-script. STREAM its stderr to our stderr line-by-line so users
-    see progress events in real time. Collect stdout in full (we need to parse
-    it as JSON at the end).
+    """Run a sub-script. Two implementations:
+
+    1. _STEP_LOGS_DIR is set (MCP server context, via WATCH_VIDEO_NO_PIPE):
+       sub-script stdio -> disk files. No pipe drain, no event-loop
+       contention.
+    2. Default (CLI/skill): STREAM stderr line-by-line so users see progress
+       events in real time. Collect stdout in full (parsed as JSON at end).
 
     Propagate exit code on failure. On non-zero exits we also forward stdout
     (needed for ExitCode.AMBIGUOUS where stdout carries the candidates JSON).
     """
+    if _STEP_LOGS_DIR is not None:
+        return _run_step_via_log_files(name, cmd)
+
     import threading
     proc = subprocess.Popen(
         cmd,
@@ -124,6 +191,18 @@ def run_step(name: str, cmd: list[str]) -> dict:
 def fetch(kind: str, value: str, workdir: Path,
           attachment_id: str | None, credentials: str | None,
           since_seconds: int) -> dict:
+    if _STEP_LOGS_DIR is not None:
+        import fetch as fetch_mod
+        return fetch_mod.run_inproc(
+            workdir=workdir,
+            url=value if kind == "url" else None,
+            path=value if kind == "path" else None,
+            jira_key=value if kind == "jira" else None,
+            auto_downloads=(kind == "auto"),
+            attachment_id=attachment_id,
+            since_seconds=since_seconds,
+            credentials=credentials,
+        )
     cmd = [sys.executable, str(SCRIPTS_DIR / "fetch.py"), str(workdir)]
     if kind == "jira":
         cmd += ["--jira-key", value]
@@ -141,6 +220,13 @@ def fetch(kind: str, value: str, workdir: Path,
 
 
 def probe(video: Path) -> dict:
+    # In MCP mode, call probe in-process. Each subprocess spawn under Claude
+    # Desktop's process tree gets hit by Windows Defender for ~5-20 seconds
+    # of scanning; inlining the step eliminates that tax (the only Python
+    # spawn becomes watch_video.py itself).
+    if _STEP_LOGS_DIR is not None:
+        import probe as probe_mod
+        return probe_mod.run_inproc(video)
     return run_step("probe", [sys.executable, str(SCRIPTS_DIR / "probe.py"), str(video)])
 
 
@@ -150,6 +236,13 @@ def extract_frames(video: Path, workdir: Path,
                    scene_mode: bool, scene_threshold: float) -> dict:
     """Note: dedup happens in a separate post-transcribe step (see smart_dedup)
     so the deduper can use transcript paragraph timestamps as protection."""
+    if _STEP_LOGS_DIR is not None:
+        import frames as frames_mod
+        return frames_mod.run_inproc(
+            video=video, workdir=workdir, frames=frames, resolution=resolution,
+            start_spec=start, end_spec=end,
+            scene_mode=scene_mode, scene_threshold=scene_threshold,
+        )
     cmd = [sys.executable, str(SCRIPTS_DIR / "frames.py"), str(video), str(workdir),
            "--resolution", str(resolution)]
     if frames > 0:
@@ -165,6 +258,12 @@ def extract_frames(video: Path, workdir: Path,
 
 def smart_dedup(workdir: Path, threshold: int,
                 min_interval: float, protect_window: float) -> dict:
+    if _STEP_LOGS_DIR is not None:
+        import dedup as dedup_mod
+        return dedup_mod.run_inproc(
+            workdir=workdir, threshold=threshold,
+            min_interval=min_interval, protect_window=protect_window,
+        )
     return run_step("dedup",
                     [sys.executable, str(SCRIPTS_DIR / "dedup.py"), str(workdir),
                      "--threshold", str(threshold),
@@ -185,6 +284,16 @@ def transcribe(video: Path, workdir: Path,
                whisper: str, whisper_api_key: str | None,
                whisper_credentials: str | None,
                captions_vtt: str | None = None) -> dict:
+    if _STEP_LOGS_DIR is not None:
+        import transcribe as transcribe_mod
+        return transcribe_mod.run_inproc(
+            workdir=workdir, video=str(video), whisper=whisper,
+            captions_vtt=captions_vtt,
+            whisper_api_key=whisper_api_key,
+            whisper_credentials=whisper_credentials,
+            model_name=model, lang=lang,
+            start_spec=start, end_spec=end,
+        )
     cmd = [sys.executable, str(SCRIPTS_DIR / "transcribe.py"), str(workdir),
            "--video", str(video), "--whisper", whisper]
     if model:
@@ -205,6 +314,9 @@ def transcribe(video: Path, workdir: Path,
 
 
 def report(workdir: Path, *, no_html: bool = False, no_docx: bool = False) -> dict:
+    if _STEP_LOGS_DIR is not None:
+        import report as report_mod
+        return report_mod.run_inproc(workdir=workdir, no_html=no_html, no_docx=no_docx)
     cmd = [sys.executable, str(SCRIPTS_DIR / "report.py"), str(workdir)]
     if no_html:
         cmd.append("--no-html")
@@ -391,6 +503,7 @@ def main() -> int:
     kind, value = classify_input(args.input)
     workdir = Path(args.workdir).resolve() if args.workdir else default_workdir(kind, value)
     workdir.mkdir(parents=True, exist_ok=True)
+    _maybe_enable_log_file_mode(workdir)
     meta_path = workdir / "meta.json"
     frames_dir = workdir / "frames"
 

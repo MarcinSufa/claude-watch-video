@@ -255,6 +255,8 @@ When multiple video attachments exist, the script exits with code `5` (AMBIGUOUS
 
 The orchestrator does steps 1–6 in one command. The agent (me) handles steps 7–8.
 
+### Path A — Claude Code skill/plugin or direct CLI invocation (preferred)
+
 ```bash
 # Single command — auto-detects input kind. Works for path, URL, Jira key, Jira URL, or "auto".
 # Plugin install (recommended):
@@ -264,6 +266,36 @@ python ~/.claude/skills/watch-video/scripts/watch_video.py <input> [flags]
 ```
 
 `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code when the plugin is installed via `/plugin install`. For manual installs (clone into `~/.claude/skills/<name>/`), substitute the install path. The two forms are otherwise identical.
+
+### Path B — When invoked through the MCP server (Claude Desktop, Cursor, Cline, etc.)
+
+If the host has the watch-video MCP server registered (tools prefixed `mcp__watch-video__*`), use the **polling pattern** — NOT the legacy blocking `watch_video` tool, which hangs on Claude Desktop due to a stdio JSON-RPC buffer interaction.
+
+The pattern is two tools used together:
+
+```
+1. Call mcp__watch-video__watch_video_start(input_ref=<URL>, ...)
+   → returns immediately with {"job_id": "<workdir-path>", "state": "running", ...}
+
+2. Loop: call mcp__watch-video__watch_video_status(job_id=<workdir-path>)
+   → wait ~3 seconds between polls
+   → break when "state" is "done", "failed", or "unknown"
+   → typical completion: 5-30 seconds for short YouTube clips with captions
+
+3. When state is "done":
+   - status["meta"] contains the full meta.json (workdir, transcript info, frame counts)
+   - The workdir is also at status["workdir"]
+   - Use mcp__watch-video__read_transcript(workdir=...) to read the transcript
+   - Use mcp__watch-video__read_report(workdir=..., fmt="md") to read report.md
+   - Use mcp__watch-video__pick_highlights(workdir=..., prompt="...") for LLM-driven moments
+   - Use mcp__watch-video__post_to_jira(workdir=..., confirm=True) to post (with user approval)
+```
+
+**Polling cadence:** start with 1-second intervals for the first few seconds (captions-eligible content often completes in <5s), then back off to 3-5 second intervals. Most short clips complete in <10 seconds total; longer videos with local Whisper can take 30-120 seconds. If state stays "running" past 5 minutes, something is genuinely wrong — surface this to the user.
+
+**Why two tools instead of one blocking call:** the legacy `watch_video` MCP tool blocks the host on a single multi-second tool call, which fights stdio JSON-RPC buffer drain on Claude Desktop and similar hosts. The polling pattern means every tool call returns in <100ms, so no buffer pressure. Each `watch_video_status` poll also gives the user a chance to see the work is alive (via the host's tool-call UI).
+
+**Backwards compat:** the original blocking `watch_video` tool is still registered but documented as deprecated. Prefer `watch_video_start` + `watch_video_status` on any host where the blocking call has shown issues.
 
 1. **Run the orchestrator.** Pass `<input>` and any of these optional flags:
    - `--workdir <PATH>` — override default `c:\tmp\watch-<slug>\`

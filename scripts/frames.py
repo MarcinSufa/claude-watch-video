@@ -176,6 +176,101 @@ def dedup_phash(staging: Path, timestamps: dict[str, float],
     return new_timestamps, len(dropped)
 
 
+def run_inproc(
+    video: Path,
+    workdir: Path,
+    frames: int = 0,
+    resolution: int = 960,
+    start_spec: str | None = None,
+    end_spec: str | None = None,
+    scene_mode: bool = False,
+    scene_threshold: float = 0.3,
+    dedup: bool = False,
+    dedup_threshold: int = 5,
+) -> dict:
+    """Pure function for in-process invocation. See probe.run_inproc docstring
+    for the MCP-mode rationale."""
+    video = video.resolve()
+    if not video.exists():
+        die(ExitCode.BAD_INPUT, f"video not found: {video}")
+    workdir = workdir.resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    ffmpeg = require_executable("ffmpeg")
+    ffprobe = require_executable("ffprobe")
+
+    total = _probe_total(ffprobe, video)
+    start = parse_time_spec(start_spec)
+    end = parse_time_spec(end_spec)
+    try:
+        window = window_duration(start, end, total)
+    except ValueError as e:
+        die(ExitCode.BAD_INPUT, str(e))
+
+    frames_dir = workdir / "frames"
+    staging = atomic_path(frames_dir)
+    staging.mkdir(parents=True, exist_ok=True)
+
+    mode = "scene-change" if scene_mode else "uniform"
+    emit("start", step="frames", mode=mode, window_seconds=round(window, 2),
+         resolution=resolution, dedup=dedup)
+    t0 = time.time()
+    try:
+        if scene_mode:
+            timestamps = extract_scene_change(
+                video, staging, scene_threshold, resolution, start, end, ffmpeg)
+            min_floor = max(8, auto_frame_budget(window) // 3)
+            if len(timestamps) < min_floor:
+                emit("warning", step="frames",
+                     msg=f"scene-change produced only {len(timestamps)} frames; falling back to uniform",
+                     fallback="uniform")
+                for f in staging.glob("t_*.jpg"):
+                    f.unlink(missing_ok=True)
+                frame_count = frames if frames > 0 else auto_frame_budget(window)
+                fps = min(2.0, round(frame_count / window, 3)) or 0.5
+                timestamps = extract_uniform(
+                    video, staging, fps, resolution, start, end, ffmpeg)
+                mode = "uniform-fallback"
+        else:
+            frame_count = frames if frames > 0 else auto_frame_budget(window)
+            fps = min(2.0, round(frame_count / window, 3)) or 0.5
+            timestamps = extract_uniform(
+                video, staging, fps, resolution, start, end, ffmpeg)
+    except KeyboardInterrupt:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    if not timestamps:
+        shutil.rmtree(staging, ignore_errors=True)
+        die(ExitCode.IO_FAIL, "no frames extracted")
+
+    dropped = 0
+    if dedup:
+        emit("start", step="dedup", before=len(timestamps), threshold=dedup_threshold)
+        timestamps, dropped = dedup_phash(staging, timestamps, dedup_threshold)
+        emit("complete", step="dedup", dropped=dropped, after=len(timestamps))
+
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir)
+    finalize(staging, frames_dir)
+
+    emit("complete", step="frames", count=len(timestamps), mode=mode,
+         duration_seconds=round(time.time() - t0, 2))
+
+    return {
+        "frames_dir": str(frames_dir),
+        "frame_count": len(timestamps),
+        "mode": mode,
+        "resolution": resolution,
+        "window_start": start,
+        "window_end": end,
+        "window_seconds": round(window, 3),
+        "timestamps_by_frame": {k: round(v, 3) for k, v in sorted(timestamps.items())},
+        "dedup_dropped": dropped if dedup else None,
+        "scene_threshold": scene_threshold if scene_mode else None,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
@@ -193,90 +288,18 @@ def main() -> int:
     ap.add_argument("--dedup-threshold", type=int, default=5,
                     help="pHash Hamming distance threshold for dedup (default 5)")
     args = ap.parse_args()
-
-    video = Path(args.video).resolve()
-    if not video.exists():
-        die(ExitCode.BAD_INPUT, f"video not found: {video}")
-    workdir = Path(args.workdir).resolve()
-    workdir.mkdir(parents=True, exist_ok=True)
-
-    ffmpeg = require_executable("ffmpeg")
-    ffprobe = require_executable("ffprobe")
-
-    total = _probe_total(ffprobe, video)
-    start = parse_time_spec(args.start)
-    end = parse_time_spec(args.end)
-    try:
-        window = window_duration(start, end, total)
-    except ValueError as e:
-        die(ExitCode.BAD_INPUT, str(e))
-
-    # Stage frames in a sibling dir, finalize atomically
-    frames_dir = workdir / "frames"
-    staging = atomic_path(frames_dir)
-    staging.mkdir(parents=True, exist_ok=True)
-
-    mode = "scene-change" if args.scene_mode else "uniform"
-    emit("start", step="frames", mode=mode, window_seconds=round(window, 2),
-         resolution=args.resolution, dedup=args.dedup)
-    t0 = time.time()
-    try:
-        if args.scene_mode:
-            timestamps = extract_scene_change(
-                video, staging, args.scene_threshold, args.resolution, start, end, ffmpeg)
-            # Fallback: if scene-change produced too few frames, fall back to uniform
-            min_floor = max(8, auto_frame_budget(window) // 3)
-            if len(timestamps) < min_floor:
-                emit("warning", step="frames",
-                     msg=f"scene-change produced only {len(timestamps)} frames; falling back to uniform",
-                     fallback="uniform")
-                # Clean staging and rerun uniform
-                for f in staging.glob("t_*.jpg"):
-                    f.unlink(missing_ok=True)
-                frame_count = args.frames if args.frames > 0 else auto_frame_budget(window)
-                fps = min(2.0, round(frame_count / window, 3)) or 0.5
-                timestamps = extract_uniform(
-                    video, staging, fps, args.resolution, start, end, ffmpeg)
-                mode = "uniform-fallback"
-        else:
-            frame_count = args.frames if args.frames > 0 else auto_frame_budget(window)
-            fps = min(2.0, round(frame_count / window, 3)) or 0.5
-            timestamps = extract_uniform(
-                video, staging, fps, args.resolution, start, end, ffmpeg)
-    except KeyboardInterrupt:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-
-    if not timestamps:
-        shutil.rmtree(staging, ignore_errors=True)
-        die(ExitCode.IO_FAIL, "no frames extracted")
-
-    dropped = 0
-    if args.dedup:
-        emit("start", step="dedup", before=len(timestamps), threshold=args.dedup_threshold)
-        timestamps, dropped = dedup_phash(staging, timestamps, args.dedup_threshold)
-        emit("complete", step="dedup", dropped=dropped, after=len(timestamps))
-
-    # Finalize the staging dir into place
-    if frames_dir.exists():
-        shutil.rmtree(frames_dir)
-    finalize(staging, frames_dir)
-
-    emit("complete", step="frames", count=len(timestamps), mode=mode,
-         duration_seconds=round(time.time() - t0, 2))
-
-    result = {
-        "frames_dir": str(frames_dir),
-        "frame_count": len(timestamps),
-        "mode": mode,
-        "resolution": args.resolution,
-        "window_start": start,
-        "window_end": end,
-        "window_seconds": round(window, 3),
-        "timestamps_by_frame": {k: round(v, 3) for k, v in sorted(timestamps.items())},
-        "dedup_dropped": dropped if args.dedup else None,
-        "scene_threshold": args.scene_threshold if args.scene_mode else None,
-    }
+    result = run_inproc(
+        video=Path(args.video),
+        workdir=Path(args.workdir),
+        frames=args.frames,
+        resolution=args.resolution,
+        start_spec=args.start,
+        end_spec=args.end,
+        scene_mode=args.scene_mode,
+        scene_threshold=args.scene_threshold,
+        dedup=args.dedup,
+        dedup_threshold=args.dedup_threshold,
+    )
     print(json.dumps(result))
     return ExitCode.OK
 

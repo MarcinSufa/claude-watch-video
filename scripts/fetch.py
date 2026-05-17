@@ -72,16 +72,46 @@ def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
         # Also pull captions if available -- preferring manual ("real") over
         # auto-generated. transcribe.py can use these instead of paying for
         # Whisper. Whisper still runs as a fallback when no captions exist.
+        # The DownloadError handler below catches YouTube's 429 on the
+        # subtitle endpoint and retries with these flipped to False.
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitlesformat": "vtt",
         "subtitleslangs": ["en", "en-US", "en-GB"],
     }
+    def _ydl_run(opts: dict) -> dict:
+        with YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=True)
+
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        info = _ydl_run(ydl_opts)
     except DownloadError as e:
-        die(ExitCode.IO_FAIL, f"yt-dlp failed (network or unsupported URL): {e}")
+        err_msg = str(e)
+        # YouTube's subtitle endpoint rate-limits aggressively (429 / Too Many
+        # Requests). The video itself is downloadable; only the captions
+        # request is gated. Retry once without subtitles and let transcribe
+        # fall back to local Whisper. Keeps the pipeline usable when YouTube
+        # is throttling.
+        is_subtitle_rate_limit = (
+            "429" in err_msg
+            or "Too Many Requests" in err_msg
+            or "Sign in to confirm" in err_msg
+        )
+        if is_subtitle_rate_limit:
+            emit("warning", step="yt_dlp",
+                 msg="captions endpoint rate-limited; retrying without subtitles. "
+                     "transcribe will fall back to local Whisper.",
+                 first_error=err_msg.splitlines()[0][:200])
+            retry_opts = {**ydl_opts,
+                          "writesubtitles": False,
+                          "writeautomaticsub": False}
+            try:
+                info = _ydl_run(retry_opts)
+            except DownloadError as e2:
+                die(ExitCode.IO_FAIL,
+                    f"yt-dlp failed even without captions: {e2}")
+        else:
+            die(ExitCode.IO_FAIL, f"yt-dlp failed (network or unsupported URL): {e}")
     except KeyboardInterrupt:
         raise
     except Exception as e:
@@ -343,6 +373,56 @@ def fetch_jira(jira_key: str, workdir: Path, creds_path: Path,
 
 # ---- Entry point ----------------------------------------------------------
 
+def run_inproc(
+    workdir: Path,
+    url: str | None = None,
+    path: str | None = None,
+    jira_key: str | None = None,
+    auto_downloads: bool = False,
+    attachment_id: str | None = None,
+    since_seconds: int = 300,
+    credentials: str | None = None,
+) -> dict:
+    """Pure function for in-process invocation. See probe.run_inproc docstring.
+
+    Exactly one of {url, path, jira_key, auto_downloads=True} must be provided.
+    """
+    workdir = workdir.resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    if credentials is None:
+        credentials = str(DEFAULT_CREDS_PATH)
+
+    extra: dict = {}
+    if url:
+        downloaded, extra = fetch_url(url, workdir)
+        source = "url"
+    elif path:
+        p = Path(path).resolve()
+        if not p.exists():
+            die(ExitCode.BAD_INPUT, f"file not found: {p}")
+        downloaded = p
+        source = "path"
+    elif jira_key:
+        downloaded, extra = fetch_jira(
+            jira_key, workdir, Path(credentials), attachment_id,
+        )
+        source = "jira"
+    elif auto_downloads:
+        downloaded = auto_from_downloads(since_seconds)
+        source = "auto-downloads"
+    else:
+        die(ExitCode.BAD_INPUT,
+            "fetch.run_inproc requires one of: url, path, jira_key, or auto_downloads=True")
+
+    return {
+        "path": str(downloaded),
+        "source": source,
+        "size_bytes": downloaded.stat().st_size,
+        "mtime": int(downloaded.stat().st_mtime),
+        **extra,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("workdir")
@@ -358,36 +438,16 @@ def main() -> int:
     ap.add_argument("--credentials", default=str(DEFAULT_CREDS_PATH),
                     help="(--jira-key only) path to Atlassian credentials JSON")
     args = ap.parse_args()
-
-    workdir = Path(args.workdir).resolve()
-    workdir.mkdir(parents=True, exist_ok=True)
-
-    extra: dict = {}
-    if args.url:
-        path, extra = fetch_url(args.url, workdir)
-        source = "url"
-    elif args.path:
-        p = Path(args.path).resolve()
-        if not p.exists():
-            die(ExitCode.BAD_INPUT, f"file not found: {p}")
-        path = p
-        source = "path"
-    elif args.jira_key:
-        path, extra = fetch_jira(
-            args.jira_key, workdir, Path(args.credentials), args.attachment_id,
-        )
-        source = "jira"
-    else:
-        path = auto_from_downloads(args.since_seconds)
-        source = "auto-downloads"
-
-    info = {
-        "path": str(path),
-        "source": source,
-        "size_bytes": path.stat().st_size,
-        "mtime": int(path.stat().st_mtime),
-        **extra,
-    }
+    info = run_inproc(
+        workdir=Path(args.workdir),
+        url=args.url,
+        path=args.path,
+        jira_key=args.jira_key,
+        auto_downloads=args.auto_downloads,
+        attachment_id=args.attachment_id,
+        since_seconds=args.since_seconds,
+        credentials=args.credentials,
+    )
     print(json.dumps(info))
     return ExitCode.OK
 

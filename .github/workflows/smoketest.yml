@@ -1,0 +1,73 @@
+name: smoketest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs when a new commit is pushed to the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoketest:
+    name: smoke (${{ matrix.os }} / py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ubuntu is the fast/cheap path; Windows confirms cross-platform claim.
+        # macOS skipped for now -- adds ~5min queue time without catching anything
+        # ubuntu doesn't, and the user dev'd this on Windows so the Windows job
+        # gives us the higher-signal cross-platform check.
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.12'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # ffmpeg is the only non-Python dependency the default smoketest needs.
+      # (The smoketest uses --no-audio, so faster-whisper is not required.
+      # Pillow / imagehash / python-docx are also optional -- omitted to keep
+      # the install footprint minimal.)
+      - name: Install ffmpeg (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        uses: AnimMouse/setup-ffmpeg@v1
+
+      - name: Verify ffmpeg is on PATH
+        run: ffmpeg -version | head -n 1
+        shell: bash
+
+      # Catches syntax errors / import-time failures in any script without
+      # actually running the pipeline.
+      - name: py_compile every script
+        run: python -m py_compile scripts/_cache.py scripts/_common.py scripts/dedup.py scripts/fetch.py scripts/frames.py scripts/highlights.py scripts/ocr.py scripts/post_to_jira.py scripts/probe.py scripts/report.py scripts/smoketest.py scripts/transcribe.py scripts/watch_batch.py scripts/watch_video.py
+        shell: bash
+
+      # The real smoke test: generates a synthetic 5s video, runs the
+      # orchestrator end-to-end (--no-audio), asserts artifacts + meta.json
+      # fields look right. Exits 0 on pass.
+      - name: Run smoketest.py
+        run: python scripts/smoketest.py
+        shell: bash

@@ -3,6 +3,57 @@
 Future improvements to `watch-video`, ranked by leverage (effort vs. payoff).
 Snapshot date: 2026-05-16. Revisit after each release to re-prioritise.
 
+---
+
+## Status assessment (2026-05-17)
+
+Current rating: **~7.5/10**. Real engineering + well-positioned competitively, but bounded by distribution gaps and thin test coverage. Trajectory is steep -- yesterday it was a private repo with safety bugs; today it's v2.0.0 public with an MCP wrapper across 9 hosts.
+
+### Scored by dimension
+
+| Dimension | Score | Notes |
+|---|---|---|
+| Feature breadth | 9/10 | Best-in-class Jira integration; only one with a write-safety stack |
+| Cost per video | 10/10 | Cheapest credible Tier-3 option by 7-200x; documented in Atlassian case study |
+| Wall-clock time (YouTube) | 10/10 | Structurally faster than any Whisper-based service (captions-first skips the work) |
+| Privacy posture | 10/10 | Local-by-default; every external call is explicit opt-in |
+| Documentation | 9/10 | Above 95th percentile of OSS docs at this size; every metric traceable |
+| Roadmap clarity | 9/10 | Versioned, prioritised, dated |
+| Polish | 8/10 | README hero card + Atlassian showcase artifact land well |
+| Safety design | 10/10 | "No unsolicited Jira writes" encoded across CLI + MCP + memory rule |
+| Code maturity (tests + CI) | 5/10 | Smoketest only; no CI; single contributor; review found bugs that had no test coverage |
+| Distribution / discoverability | 4/10 | Self-hosted install works; awesome lists in flight; marketplace pending; zero promotion fired |
+| Stars / mindshare | 2/10 | Brand new (public for 2 days); ~zero stars at the moment |
+
+### The four highest-ROI fixes (do these next, in order)
+
+| # | Item | Effort | Why it matters |
+|---|---|---|---|
+| A | **Record a 60-90 second demo video / asciinema** of a real run. Embed at top of README. | ~30 min | Single biggest credibility move. Current hero is static screenshots; a moving demo turns the abstract pitch into something visceral. |
+| B | **Fire the already-drafted promotion posts** (HN + Twitter + the awesome-list PRs that are eligible). | ~1 hr | Drives the first 100 GitHub stars. Without traffic, the great docs are invisible. |
+| C | **Add GitHub Actions CI** running `smoketest.py` on push. | ~30 min | Signals maturity to anyone evaluating. Catches regressions in the long tail. |
+| D | **Test in Claude Desktop directly** (the actual production target). | ~10 min | MCP wrapper is verified via Inspector but not via Claude Desktop yet. Close this loop before promoting. |
+
+Doing all four moves the plugin from "interesting demo with great docs" to "trustworthy production-grade tool" within a week.
+
+### Skip-for-now (don't burn effort here until A-D land)
+
+- GitHub Issues integration (v2.1.0)
+- Linear integration (v2.1.0)
+- Slack/Discord webhook (v2.1.0)
+- Auto-dep installer
+- Audio-only mode
+- Live screen capture mode
+- ChatGPT Custom GPT support (skip indefinitely; SaaS deployment is a different product)
+
+### Real UI bug-triage walkthrough (separate concern)
+
+The Jira-native fetch is the most differentiated feature, but the README claims it without showing it on a real bug. Adding a 60-90s screen-recording of the skill watching a bug video and posting back to a Jira issue would close the biggest **credibility** gap (separate from the four marketing gaps above).
+
+Status: deferred 3 times so far this week. User decided to record their own once the day-to-day Atlassian/Marcin time permits.
+
+---
+
 ## Architecture decision: CLI-first + thin MCP wrapper
 
 **Status:** SHIPPED in v2.0.0. See `mcp-server/`.

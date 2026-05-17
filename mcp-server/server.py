@@ -243,38 +243,39 @@ def _read_status(workdir: str) -> dict | None:
         return None
 
 
-_YT_VIDEO_ID_RE = re.compile(r"[?&]v=([A-Za-z0-9_-]{6,})")
+_JIRA_KEY_RE = re.compile(r"^[A-Z]{2,10}-\d+$")
 
 
-def _slug_from_input(input_ref: str) -> str:
-    """Generate a workdir slug from the input ref.
-
-    Care points:
-    - YouTube's canonical URL is `youtube.com/watch?v=<id>`. Naively taking
-      the last path segment and stripping query string yields the literal
-      string "watch" for every YouTube video -- different inputs collide on
-      the same default workdir and race on the same _mcp_status.json. Prefer
-      the `v=` query value when present.
-    - For everything else (youtu.be/<id>, /shorts/<id>, /share/<id>, local
-      file paths, Jira keys), the last path segment is the right slug.
-    """
-    m = _YT_VIDEO_ID_RE.search(input_ref)
-    if m:
-        return m.group(1).lower()
-    last = input_ref.rstrip("/").rsplit("/", 1)[-1]
-    last = last.split("?")[0].split("#")[0]
-    if "." in last and not last.startswith("."):
-        last = last.rsplit(".", 1)[0]
-    slug = re.sub(r"[^a-z0-9-]+", "-", last.lower()).strip("-")
-    return slug or "video"
+def _slugify(text: str, max_len: int = 60) -> str:
+    """Mirrors scripts/watch_video.py:slugify exactly."""
+    out = re.sub(r"[^a-zA-Z0-9._-]+", "-", text).strip("-").lower()
+    return out[:max_len] or "video"
 
 
 def _default_workdir(input_ref: str) -> str:
     """Pick a default workdir if the caller didn't specify one.
 
-    Uses DEFAULT_WORKDIR_ROOT (platform-aware), not a hardcoded Windows path.
+    Mirrors scripts/watch_video.py:default_workdir so MCP defaults match the
+    CLI defaults exactly. Important properties:
+    - "auto" mode uses a unix-timestamp slug so repeated auto runs don't
+      share workdirs (the selected file from ~/Downloads may differ).
+    - URL slug uses the FULL last path segment including query/fragment.
+      That keeps youtube.com/watch?v=ABC distinct from ...v=DEF (otherwise
+      both collapse to "watch" and race on the same _mcp_status.json), and
+      also keeps generic /download?id=1 distinct from /download?id=2.
+    - Jira-key inputs get a clean lowercased slug.
+    - File-path inputs slug from the basename stem.
     """
-    return str(DEFAULT_WORKDIR_ROOT / f"watch-{_slug_from_input(input_ref)}")
+    if input_ref == "auto":
+        slug = f"watch-{int(_time.time())}"
+    elif _JIRA_KEY_RE.match(input_ref):
+        slug = f"watch-{input_ref.lower()}"
+    elif "://" in input_ref:
+        last_segment = input_ref.rsplit("/", 1)[-1] or "url"
+        slug = f"watch-{_slugify(last_segment)}"
+    else:
+        slug = f"watch-{_slugify(Path(input_ref).stem)}"
+    return str(DEFAULT_WORKDIR_ROOT / slug)
 
 
 async def _run_pipeline_and_update_status(
@@ -310,10 +311,16 @@ async def _run_pipeline_and_update_status(
     out_f = None
     err_f = None
     try:
-        # Open log files for output redirection. They get appended to so a
-        # follow-up retry on the same workdir leaves a debuggable history.
-        out_f = open(stdout_log, "ab", buffering=0)
-        err_f = open(stderr_log, "ab", buffering=0)
+        # Open log files for output redirection. Mode "wb" truncates per
+        # run -- previously "ab" appended, which left the previous run's
+        # events tail-readable by watch_video_status's _read_last_event()
+        # during the new run's cold-start delay. The status reporter would
+        # show the *previous* run's final "complete" event while the new
+        # job hadn't written anything yet, looking like the job was done.
+        # Truncating per run keeps last_event correct at the cost of
+        # debugging history -- previous runs' logs are gone after a retry.
+        out_f = open(stdout_log, "wb", buffering=0)
+        err_f = open(stderr_log, "wb", buffering=0)
 
         # WATCH_VIDEO_NO_PIPE tells watch_video.py to redirect its sub-script
         # stdio (probe.py, frames.py, dedup.py, transcribe.py, ...) to log
@@ -516,20 +523,29 @@ async def watch_video_start(
     job_id = str(Path(resolved_workdir).expanduser().resolve())
 
     # Don't spawn a second pipeline for a workdir that already has one
-    # running -- both tasks would write the same artifacts, logs, cache, and
-    # _mcp_status.json, racing each other. The natural shape here is "return
-    # the existing state, idempotently"; callers can retry status until it
-    # transitions to done/failed.
+    # running in THIS server process -- both tasks would write the same
+    # artifacts, logs, cache, and _mcp_status.json, racing each other.
+    #
+    # Stale-running detection: if the status was written by a different
+    # server process (different pid), that process is gone -- Claude
+    # Desktop restarted, the MCP server crashed mid-job, etc. -- and the
+    # in-memory task that would have written the terminal state died with
+    # it. Treat the persisted "running" as stale and start fresh; otherwise
+    # the user is stuck polling a job that never completes.
     existing = _read_status(job_id)
     if existing and existing.get("state") == "running":
-        return json.dumps({
-            "job_id": job_id,
-            "state": "running",
-            "started_at": existing.get("started_at"),
-            "workdir": job_id,
-            "note": ("job already running for this workdir; reusing it. "
-                     "Poll watch_video_status until the state transitions."),
-        })
+        recorded_pid = existing.get("server_pid")
+        if recorded_pid == os.getpid():
+            return json.dumps({
+                "job_id": job_id,
+                "state": "running",
+                "started_at": existing.get("started_at"),
+                "workdir": job_id,
+                "note": ("job already running for this workdir; reusing it. "
+                         "Poll watch_video_status until the state transitions."),
+            })
+        # else: stale from a previous server instance -- fall through and
+        # start a fresh pipeline (will overwrite the stale status below).
 
     # Build args for the CLI subprocess.
     args = [input_ref, "--workdir", job_id]
@@ -549,13 +565,16 @@ async def watch_video_start(
         args.append("--no-docx")
 
     # Write the initial "running" status BEFORE launching the background task,
-    # so an immediate status poll always sees something.
+    # so an immediate status poll always sees something. server_pid lets a
+    # later watch_video_start detect stale-running state from a previous
+    # server instance (see the duplicate-guard above).
     started_at = _time.time()
     _write_status(job_id, {
         "state": "running",
         "started_at": started_at,
         "input_ref": input_ref,
         "workdir": job_id,
+        "server_pid": os.getpid(),
     })
 
     # Spawn the pipeline as a background task. Doesn't block the tool

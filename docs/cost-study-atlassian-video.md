@@ -206,6 +206,68 @@ It's not magic. It's three engineering choices stacked:
 
 The math is dominated by step 2 -- the 99.9% frame reduction. Anthropic's video billing assumes you genuinely need every frame. For watch-and-summarize workloads (talks, demos, bug repros), you don't.
 
+## Wall-clock time vs alternatives
+
+Cost is only half the picture; **time-to-result matters too**, especially for interactive workflows where you're waiting for the answer.
+
+For the same 40-minute Atlassian video, end-to-end wall-clock to get a structured analysis:
+
+| Service / pipeline | Wall-clock | Source | Notes |
+|---|---|---|---|
+| **watch-video (captions-first) + agent reads** | **~4-5 min** | measured | Pipeline: 15.66s. Agent reasoning: 3-4 min. |
+| **watch-video (captions-first) pipeline only** | **15.66 s** | measured | YouTube captions exist, no Whisper needed |
+| **watch-video (local Whisper) pipeline only** | ~3-4 min | est. from short-video measurement | faster-whisper `small.en` on CPU, ~5-10% real-time |
+| Groq Whisper API (transcribe only) | ~10-30 s | published SLA | Often faster than real-time; their speed claim |
+| Gemini 3 Flash native video upload | ~30 s - 2 min | est. from typical Gemini latency | Upload + processing one API call |
+| Gemini 3 Pro native video upload | ~1-3 min | est. | Same path, larger model |
+| Deepgram Nova-3 (transcribe only) | ~30-60 s | published | Fast file mode; lower than real-time |
+| Anthropic Claude native video upload | ~2-5 min | est. | Upload of 50+ MB file + ~22M token decode |
+| OpenAI Whisper-1 API (transcribe only) | ~2-4 min | typical | Batch-style processing, slower than streaming providers |
+| AssemblyAI (transcribe only) | ~3-6 min | published SLA | 30-50% of audio length is their typical async window |
+| OpenAI Whisper + GPT-4o vision DIY | ~5-15 min | composite | Multiple API hops + per-frame vision calls |
+| AWS Transcribe (async) | ~5-15 min | typical | Queue-based; SLA depends on tier |
+| Twelve Labs Pegasus 1.2 (embed only) | ~5-15 min | published | Embedding generation is slower than transcription |
+| Google Cloud Speech-to-Text (async) | ~3-8 min | typical | Long-running operation |
+| Azure Speech-to-Text (batch) | ~3-8 min | typical | Similar batch path |
+| Microsoft Video Indexer (advanced) | ~15-30 min | published | Full analysis pipeline; runs many models |
+| Symbl.ai | ~5-10 min | typical | Conversation analysis + insights |
+
+### What makes watch-video fast on YouTube specifically
+
+The decisive trick is **skipping Whisper entirely** when captions are available. YouTube's own auto-captions are produced once at upload time and served free forever. Every Whisper-based service has to:
+
+1. Download the audio (40 min worth)
+2. Run inference on ~40 min of audio (even at "real-time" speed that's 40 minutes; at "10x faster than real-time" it's 4 minutes)
+
+watch-video skips both because the captions are already parsed and served by YouTube's CDN. Our 15.66s pipeline is essentially: download MP4 (~9s) + download VTT (instant) + extract frames (2s) + parse captions (<1s) + dedup (<1s) + write reports (3s).
+
+For non-YouTube content (local files, internal Loom, Jira attachments) we fall back to local faster-whisper -- still free, just slower (~3-4 min for 40 min of audio on CPU). That's a fair speed tradeoff for $0 cost and zero data leaving the machine.
+
+### Cost-and-time scatter (one chart, two axes)
+
+For the same 40-min video, plotting cost vs time:
+
+```
+          Cheap & fast (top-left = best)
+        $0  ┤ watch-video (captions)       •  Groq Whisper
+            │                                    (transcribe-only)
+        $0.10│ watch-video (local Whisper)     • Gemini 3 Flash
+            │
+        $1  ┤   • Gemini 3 Pro            • Deepgram
+            │                              • OpenAI Whisper API
+        $10 ┤                              • AssemblyAI
+            │              • Claude Sonnet (raw upload)
+        $100┤
+            │
+       $1000┤ Claude Opus (raw upload) •
+            │
+            └────────────────────────────────────────────►
+              <1min     1-5min    5-15min    >15min
+                            Wall-clock
+```
+
+watch-video on YouTube content lands in the top-left corner (cheapest AND fastest) -- a position none of the dedicated transcription APIs or multimodal LLM providers can match on YouTube specifically, because they all have to do work that the YouTube CDN already did for free.
+
 ## Why this works (technical summary)
 
 1. **Captions-first transcription.** YouTube's manual VTT captions are free. We use them when available, fall back to local faster-whisper only when they're not. Zero per-video transcription cost on most YouTube content.

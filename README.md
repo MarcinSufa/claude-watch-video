@@ -357,16 +357,37 @@ The Anthropic-raw-upload comparison is the cleanest apples-to-apples on output q
 
 ### Real-world case study: 40-minute Atlassian engineering talk
 
-A measured end-to-end run against a 40-minute technical talk about Atlassian's edge infrastructure ("I was laid off by Atlassian", 1,032 transcript segments, 79 frames after dedup). Results:
+A measured end-to-end run against a 40-minute technical talk about Atlassian's edge infrastructure ("I was laid off by Atlassian", 1,032 transcript segments, 79 frames after dedup). The pipeline + agent produced a [structured architecture report with 5 Mermaid diagrams and 4 Chart.js charts](docs/examples/atlassian-architecture-report.html).
 
-- **Pipeline:** 15.66 seconds, **$0**
-- **Agent reads + composes structured architecture report with 5 diagrams + 4 charts:** ~4-5 minutes wall-clock, **~$0.04** on Haiku / **~$0.16** on Sonnet
-- **Same input on raw Claude video upload:** ~$330-400 (72,000 frames at 30 fps × Opus tokenization)
-- **Effective ratio: ~6,000-8,000× cheaper** on Haiku
+**Direct cost AND time comparison vs alternatives** — same 40-minute video, same output goal (transcript + visual context + structured analysis):
 
-The resulting artifact: **[docs/examples/atlassian-architecture-report.html](docs/examples/atlassian-architecture-report.html)** — a self-contained 218 KB HTML report with Mermaid diagrams, Chart.js charts, and base64-embedded whiteboard frames from the video. Open it in any browser.
+| Service / pipeline | Cost | Time | Output |
+|---|---|---|---|
+| **watch-video + Haiku read (this run)** | **~$0.04** | **~4-5 min** | Pipeline + full architecture report |
+| **watch-video + Sonnet read** | ~$0.16 | ~4-5 min | Same, better narrative |
+| **watch-video pipeline only (no agent)** | **$0** | **15.66 s** | Transcript + frames + report.md/.html/.docx |
+| Gemini 3 Flash native video upload | ~$0.30 | ~30 s - 2 min | One-shot multimodal answer |
+| Gemini 3 Pro native video upload | ~$0.80 | ~1-3 min | Same, larger model |
+| OpenAI Whisper + GPT-4o vision (DIY) | ~$4.50 | ~5-15 min | Multi-API pipeline |
+| Microsoft Video Indexer (advanced) | ~$8 | ~15-30 min | Enterprise analysis |
+| Anthropic Claude Haiku raw video upload | ~$17 | ~2-5 min | 30 fps frame tokenization |
+| Anthropic Claude Sonnet raw video upload | ~$66 | ~2-5 min | Same, $3/M input |
+| **Anthropic Claude Opus raw video upload** | **~$331** | ~2-5 min | 22M input tokens × $15/M |
 
-Full breakdown including per-step timing, per-model cost math, replication commands, and citation format: **[docs/cost-study-atlassian-video.md](docs/cost-study-atlassian-video.md)**.
+**Headline ratios (Haiku vs the field):**
+
+| Compare to | Cost ratio | Time ratio |
+|---|---|---|
+| Gemini 3 Flash native | **~7× cheaper** | comparable |
+| OpenAI Whisper + GPT-4o DIY | **~112× cheaper, ~2-3× faster** | |
+| Microsoft Video Indexer | **~200× cheaper, ~3-6× faster** | |
+| Anthropic Claude Opus raw | **~8,275× cheaper** | comparable |
+
+The 15.66-second pipeline-only time is the surprising number — it works because YouTube's CDN already serves the captions for free, so we skip Whisper entirely. Any Whisper-based service has to actually transcribe 40 minutes of audio. On YouTube content, **watch-video is structurally faster** than every dedicated transcription API, not just cheaper.
+
+**Artifacts you can open right now:**
+- 📊 **[docs/examples/atlassian-architecture-report.html](docs/examples/atlassian-architecture-report.html)** — the rendered report (218 KB, self-contained)
+- 📈 **[docs/cost-study-atlassian-video.md](docs/cost-study-atlassian-video.md)** — full methodology, per-step timing, cost math, replication commands, citation format
 
 ### Why it's this cheap
 

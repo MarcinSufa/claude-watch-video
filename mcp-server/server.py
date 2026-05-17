@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 
 # ---- Locate the watch-video scripts directory ----------------------------
@@ -54,26 +54,117 @@ SCRIPTS_DIR = _resolve_scripts_dir()
 
 # ---- Subprocess helper (injection-safe: argv list, no shell) -------------
 
-async def _spawn_script(script: str, *args: str) -> tuple[int, str, str]:
-    """Spawn scripts/<script> with the given args via create_subprocess_exec.
-    Returns (rc, stdout, stderr). Uses argv list -- no shell interpretation."""
+async def _spawn_script(
+    script: str,
+    *args: str,
+    ctx: "Context | None" = None,
+) -> tuple[int, str, str]:
+    """Spawn scripts/<script> with the given args. Argv-list invocation, no
+    shell interpretation (injection-safe). Returns (rc, stdout, stderr).
+
+    Two important properties beyond a bare communicate() call:
+
+    1. Streams stdout and stderr concurrently via asyncio.gather. communicate()
+       buffers both pipes until the child exits, which deadlocks on Windows
+       when either pipe fills (default buffer size is small, and our pipeline
+       emits one JSON event per step on stderr). Concurrent draining keeps
+       both pipes free.
+
+    2. When ctx is provided (FastMCP Context object passed from a tool call),
+       each structured JSON event the CLI writes on stderr is forwarded as
+       an MCP progress notification. The host (Claude Desktop, Cursor, etc.)
+       displays live feedback so a 30-second pipeline doesn't look like a hang.
+    """
     argv = [sys.executable, str(SCRIPTS_DIR / script), *args]
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_b, stderr_b = await proc.communicate()
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    async def _pump(stream, sink: list[str], emit_progress: bool) -> None:
+        """Read line-by-line, append to sink, optionally forward as progress."""
+        if stream is None:
+            return
+        async for raw in stream:
+            line = raw.decode("utf-8", errors="replace")
+            sink.append(line)
+            if not (emit_progress and ctx is not None):
+                continue
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                evt = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue  # Non-JSON noise; skip
+            step = evt.get("step", "?")
+            event = evt.get("event", "?")
+            msg = f"{step}: {event}"
+            if "duration_seconds" in evt:
+                msg += f" ({evt['duration_seconds']}s)"
+            elif "segments_done" in evt:
+                msg += f" ({evt['segments_done']} segments)"
+            elif "bytes" in evt and "total" in evt:
+                msg += f" ({evt['bytes']}/{evt['total']} bytes)"
+            try:
+                await ctx.report_progress(progress=0, total=None, message=msg)
+            except Exception:
+                # Progress reporting must never abort the underlying pipeline.
+                pass
+
+    await asyncio.gather(
+        _pump(proc.stdout, stdout_chunks, emit_progress=False),
+        _pump(proc.stderr, stderr_chunks, emit_progress=True),
+        proc.wait(),
+    )
+
     return (
         proc.returncode if proc.returncode is not None else -1,
-        stdout_b.decode("utf-8", errors="replace"),
-        stderr_b.decode("utf-8", errors="replace"),
+        "".join(stdout_chunks),
+        "".join(stderr_chunks),
     )
 
 
 def _format_child_error(rc: int, stderr: str, script: str) -> str:
     tail = "\n".join(stderr.strip().splitlines()[-20:])
     return f"{script} exited with code {rc}. Last stderr lines:\n{tail}"
+
+
+def _extract_final_json(stdout: str) -> str:
+    """Find the final JSON object in subprocess stdout.
+
+    The CLI scripts print their final result as JSON on stdout. watch_video.py
+    uses indent=2 (multi-line pretty-print); highlights.py and post_to_jira.py
+    use compact single-line JSON. The naive `splitlines()[-1]` only works for
+    the single-line case -- multi-line JSON's last line is just '}'.
+
+    Strategy: try parsing the whole stripped stdout. If that succeeds, return
+    it (handles pretty-printed). If not, walk backwards looking for the last
+    line that parses on its own (handles single-line + miscellaneous prefix
+    noise). Default to '{}' when there's no JSON at all.
+    """
+    stripped = stdout.strip()
+    if not stripped:
+        return "{}"
+    try:
+        json.loads(stripped)
+        return stripped
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(stripped.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            json.loads(line)
+            return line
+        except json.JSONDecodeError:
+            continue
+    return "{}"
 
 
 # ---- MCP server + tools --------------------------------------------------
@@ -92,6 +183,7 @@ async def watch_video(
     end: str | None = None,
     no_html: bool = False,
     no_docx: bool = False,
+    ctx: Context | None = None,
 ) -> str:
     """Run the watch-video pipeline on an input.
 
@@ -137,11 +229,10 @@ async def watch_video(
     if no_docx:
         args.append("--no-docx")
 
-    rc, stdout, stderr = await _spawn_script("watch_video.py", *args)
+    rc, stdout, stderr = await _spawn_script("watch_video.py", *args, ctx=ctx)
     if rc != 0:
         raise RuntimeError(_format_child_error(rc, stderr, "watch_video.py"))
-    last_json_line = stdout.strip().splitlines()[-1] if stdout.strip() else "{}"
-    return last_json_line
+    return _extract_final_json(stdout)
 
 
 @mcp.tool()
@@ -216,6 +307,7 @@ async def pick_highlights(
     max_n: int = 5,
     provider: str = "anthropic",
     model: str | None = None,
+    ctx: Context | None = None,
 ) -> str:
     """LLM-driven moment selection over the transcript.
 
@@ -239,11 +331,10 @@ async def pick_highlights(
     ]
     if model:
         args += ["--model", model]
-    rc, stdout, stderr = await _spawn_script("highlights.py", *args)
+    rc, stdout, stderr = await _spawn_script("highlights.py", *args, ctx=ctx)
     if rc != 0:
         raise RuntimeError(_format_child_error(rc, stderr, "highlights.py"))
-    last_json_line = stdout.strip().splitlines()[-1] if stdout.strip() else "{}"
-    return last_json_line
+    return _extract_final_json(stdout)
 
 
 @mcp.tool()
@@ -254,6 +345,7 @@ async def post_to_jira(
     style: str = "collapsed",
     summary_key_frames: int | None = None,
     force: bool = False,
+    ctx: Context | None = None,
 ) -> str:
     """Post the report.md back to its source Jira issue.
 
@@ -300,14 +392,14 @@ async def post_to_jira(
         # --yes is also needed in dry-run to avoid the TTY check.
         args.append("--yes")
 
-    rc, stdout, stderr = await _spawn_script("post_to_jira.py", *args)
+    rc, stdout, stderr = await _spawn_script("post_to_jira.py", *args, ctx=ctx)
     if rc != 0:
         raise RuntimeError(_format_child_error(rc, stderr, "post_to_jira.py"))
-    last_json_line = stdout.strip().splitlines()[-1] if stdout.strip() else "{}"
+    final_json = _extract_final_json(stdout)
     try:
-        parsed = json.loads(last_json_line)
+        parsed = json.loads(final_json)
     except json.JSONDecodeError:
-        parsed = {"raw_output": last_json_line}
+        parsed = {"raw_output": final_json}
     parsed["_mcp_confirmed"] = confirm
     parsed["_mcp_safety_note"] = (
         "Real post executed -- confirm=True was set." if confirm

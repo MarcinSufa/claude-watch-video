@@ -60,12 +60,17 @@ def detect_mean_volume(video: Path, ffmpeg: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("video")
-    args = ap.parse_args()
+def run_inproc(video: Path) -> dict:
+    """Pure function for in-process invocation from watch_video.py.
 
-    video = Path(args.video).resolve()
+    Same behavior as main() but returns the result dict directly instead of
+    serializing to stdout. Used in MCP context (see watch_video.py's
+    _STEP_LOGS_DIR + WATCH_VIDEO_NO_PIPE notes) to avoid the per-subprocess
+    Defender scan tax on Windows -- ~5-20 seconds saved per step. Errors
+    still raise SystemExit via die(); the caller is expected to catch and
+    surface them.
+    """
+    video = video.resolve()
     if not video.exists():
         die(ExitCode.BAD_INPUT, f"video not found: {video}")
 
@@ -116,6 +121,14 @@ def main() -> int:
     }
 
     emit("complete", step="probe", duration_seconds=round(time.time() - t0, 2))
+    return result
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("video")
+    args = ap.parse_args()
+    result = run_inproc(Path(args.video))
     print(json.dumps(result))
     return ExitCode.OK
 

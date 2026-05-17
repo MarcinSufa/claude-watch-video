@@ -85,40 +85,27 @@ async def _spawn_script(
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
 
-    async def _pump(stream, sink: list[str], emit_progress: bool) -> None:
-        """Read line-by-line, append to sink, optionally forward as progress."""
+    # NOTE: live MCP notifications (ctx.report_progress / ctx.info) were tried
+    # but deadlocked the call. The host doesn't drain the MCP server's stdout
+    # while awaiting a tool result -- the OS pipe buffer fills after ~10-30
+    # notifications, then `await ctx.info(...)` blocks forever waiting for
+    # buffer space, which blocks the stderr pump, which blocks the child's
+    # stderr writes, which hangs the entire pipeline.
+    #
+    # The pump itself is still required: without concurrent stdout+stderr
+    # draining the child deadlocks the same way at the OS-pipe layer (this
+    # is the original v2.0.0 communicate() bug). We drain silently here and
+    # return the full log in stderr so the caller can inspect it after.
+    async def _pump(stream, sink: list[str]) -> None:
+        """Drain a stream line-by-line into sink. Silent; no host notifications."""
         if stream is None:
             return
         async for raw in stream:
-            line = raw.decode("utf-8", errors="replace")
-            sink.append(line)
-            if not (emit_progress and ctx is not None):
-                continue
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                evt = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue  # Non-JSON noise; skip
-            step = evt.get("step", "?")
-            event = evt.get("event", "?")
-            msg = f"{step}: {event}"
-            if "duration_seconds" in evt:
-                msg += f" ({evt['duration_seconds']}s)"
-            elif "segments_done" in evt:
-                msg += f" ({evt['segments_done']} segments)"
-            elif "bytes" in evt and "total" in evt:
-                msg += f" ({evt['bytes']}/{evt['total']} bytes)"
-            try:
-                await ctx.report_progress(progress=0, total=None, message=msg)
-            except Exception:
-                # Progress reporting must never abort the underlying pipeline.
-                pass
+            sink.append(raw.decode("utf-8", errors="replace"))
 
     await asyncio.gather(
-        _pump(proc.stdout, stdout_chunks, emit_progress=False),
-        _pump(proc.stderr, stderr_chunks, emit_progress=True),
+        _pump(proc.stdout, stdout_chunks),
+        _pump(proc.stderr, stderr_chunks),
         proc.wait(),
     )
 

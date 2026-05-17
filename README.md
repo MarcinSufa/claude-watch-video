@@ -8,7 +8,7 @@
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20macOS%20%7C%20linux-lightgrey.svg)](#prerequisites)
 [![Skill](https://img.shields.io/badge/Claude%20Code-skill-purple.svg)](https://docs.claude.com/en/docs/claude-code)
 [![Plugin](https://img.shields.io/badge/Claude%20Code-plugin-purple.svg)](https://docs.claude.com/en/docs/claude-code/plugins)
-[![MCP](https://img.shields.io/badge/MCP-server-orange.svg)](mcp-server/README.md)
+[![MCP](https://img.shields.io/badge/MCP-read%20tools-orange.svg)](mcp-server/README.md)
 
 This skill turns "watch CON-1234 and tell me what broke" into a single command. It downloads the video, extracts keyframes with ffmpeg, transcribes audio with local or hosted Whisper, deduplicates near-identical frames while preserving narrated moments, optionally OCRs on-screen text, and writes a paste-ready `report.md` — all in under a minute.
 
@@ -105,7 +105,9 @@ Most "watch a video" skills can handle YouTube and call it a day. Bug-triage wor
 
 ## Quick start
 
-### As a Claude Code plugin
+> **Pick your install path:** Claude Code users get the plugin (works reliably). Everyone else uses the CLI directly (works on any platform, no host required). MCP server install is also available but the heavy `watch_video` tool has a [known limitation](mcp-server/README.md#-known-limitation--watch_video-mcp-tool) on Claude Desktop / Windows — use the CLI for the pipeline and the MCP read tools for the artifacts.
+
+### Option 1 — As a Claude Code plugin (recommended)
 
 ```bash
 /plugin marketplace add MarcinSufa/claude-watch-video
@@ -116,22 +118,27 @@ Then ask Claude:
 
 > Watch PROJ-1234 and tell me what's broken.
 
-### As a Claude Code skill (manual install)
+This is the most-tested + most-reliable path. Works on every Claude Code surface (CLI, IDE extensions, desktop apps).
+
+### Option 2 — Direct CLI use
+
+```bash
+git clone https://github.com/MarcinSufa/claude-watch-video.git
+python claude-watch-video/scripts/watch_video.py "https://youtu.be/XYZ" --dedup --verbose
+```
+
+Zero-host, zero-MCP. Works on any platform with Python + ffmpeg. Visible streaming progress. Good for CI, batch processing, scripting, or when you just want to drive the agent yourself.
+
+### Option 3 — As a Claude Code skill (manual install, equivalent to Option 1)
 
 ```bash
 git clone https://github.com/MarcinSufa/claude-watch-video.git \
   ~/.claude/skills/watch-video
 ```
 
-Restart Claude Code; the skill auto-loads.
+Restart Claude Code; the skill auto-loads. Same engine as the plugin install — pick whichever fits your workflow.
 
-### Direct CLI use
-
-```bash
-python scripts/watch_video.py PROJ-1234 --dedup --ocr
-```
-
-### As an MCP server (Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat)
+### Option 4 — As an MCP server (read tools work everywhere; `watch_video` tool unreliable, see note)
 
 ```bash
 git clone https://github.com/MarcinSufa/claude-watch-video
@@ -139,21 +146,22 @@ cd claude-watch-video/mcp-server
 pip install -e .  # or pip install -e ".[full]" for all underlying CLI deps
 ```
 
-Then register `claude-watch-video-mcp` as an MCP server in your host. For Claude Desktop:
+Then register `claude-watch-video-mcp` as an MCP server in your host. For Claude Desktop, edit `%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "watch-video": {
-      "command": "claude-watch-video-mcp"
+      "command": "C:\\Path\\To\\Python\\python.exe",
+      "args": ["C:\\path\\to\\claude-watch-video\\mcp-server\\server.py"]
     }
   }
 }
 ```
 
-For Codex CLI: `codex mcp add watch-video --command claude-watch-video-mcp`.
+For Codex CLI: `codex mcp add watch-video --command python --args "<absolute path to server.py>"`.
 
-Full host-by-host setup + tool reference + safety contract for `post_to_jira`: [mcp-server/README.md](mcp-server/README.md).
+**Important — `watch_video` MCP tool limitation:** The synchronous `watch_video` MCP tool currently hangs in Claude Desktop on Windows (see [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1)). The lightweight read tools (`read_transcript`, `read_report`, `read_highlights`, `pick_highlights`, `post_to_jira`) work reliably; only the orchestrator tool has the issue. Recommended pattern: run the CLI (Option 2) for the pipeline, then use the MCP read tools for the artifacts. Full host-by-host setup + workaround details + safety contract for `post_to_jira`: [mcp-server/README.md](mcp-server/README.md).
 
 The full set of capabilities is documented in [`SKILL.md`](SKILL.md). What follows in this README is the marketing tour.
 

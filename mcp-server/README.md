@@ -1,8 +1,35 @@
 # claude-watch-video-mcp
 
-> **MCP server wrapper for the [watch-video skill](https://github.com/MarcinSufa/claude-watch-video).** Make the same pipeline available in Claude Desktop, Codex CLI (MCP mode), Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat, and any other MCP-speaking host.
+> **MCP server wrapper for the [watch-video skill](https://github.com/MarcinSufa/claude-watch-video).** Exposes the pipeline's *read tools* (transcript, report, highlights) as MCP tools in Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat, and any other MCP-speaking host.
 
-The CLI scripts in [`../scripts/`](../scripts/) remain the canonical implementation. This package is a thin async wrapper around them — exposes ~5 MCP tools, no business logic duplication.
+The CLI scripts in [`../scripts/`](../scripts/) remain the canonical implementation. This package is a thin async wrapper around them — exposes ~6 MCP tools, no business logic duplication.
+
+---
+
+## ⚠️ Known limitation — `watch_video` MCP tool
+
+**The `watch_video` MCP tool is unreliable in Claude Desktop on Windows.** The synchronous tool call doesn't complete reliably; the JSON-RPC stdio pipe between the MCP server and the host appears to deadlock during long-running pipelines (verified end-to-end at the subprocess layer, but the host doesn't surface the result). This was tracked in [issue #1](https://github.com/MarcinSufa/claude-watch-video/issues/1).
+
+**Recommended pattern for non-Claude-Code MCP hosts (Claude Desktop, Cursor, Cline, etc.):**
+
+1. Run the **CLI directly** for the heavy pipeline. Have the agent invoke it via its terminal/shell tool, or run it yourself in a separate window:
+   ```bash
+   python C:/Users/<you>/.claude/skills/watch-video/scripts/watch_video.py \
+     "https://www.youtube.com/watch?v=..." \
+     --workdir C:/tmp/watch-myvideo --dedup --verbose
+   ```
+2. Then use the **MCP read tools** in your conversation to pull the artifacts:
+   - `mcp__watch-video__read_transcript(workdir="C:/tmp/watch-myvideo")`
+   - `mcp__watch-video__read_report(workdir="C:/tmp/watch-myvideo")`
+   - `mcp__watch-video__pick_highlights(workdir="C:/tmp/watch-myvideo", prompt="...")`
+   - `mcp__watch-video__read_highlights(workdir="C:/tmp/watch-myvideo")`
+   - `mcp__watch-video__post_to_jira(workdir="C:/tmp/watch-myvideo")`
+
+The read tools work reliably across all MCP hosts because they're lightweight (no stderr volume, no long execution). Only the `watch_video` orchestrator tool has the stdio-deadlock issue.
+
+**For Claude Code users:** install as a [Claude Code plugin](https://github.com/MarcinSufa/claude-watch-video#as-a-claude-code-plugin) instead — the plugin path doesn't go through MCP and works reliably.
+
+**Fix queued:** v2.1.0 will replace the synchronous `watch_video` tool with a `watch_video_start` + `watch_video_status` polling pattern so the host never sees a single multi-second tool call. ETA: 1-2 days of focused work; not yet scheduled.
 
 ---
 
@@ -10,7 +37,7 @@ The CLI scripts in [`../scripts/`](../scripts/) remain the canonical implementat
 
 | Tool | What it does | When to use |
 |---|---|---|
-| `watch_video(input_ref, ...)` | Run the full pipeline: download → frames → transcribe → dedup → OCR → report. | Starting point. Returns the workdir path; pass it to the other tools. |
+| `watch_video(input_ref, ...)` ⚠️ | Run the full pipeline: download → frames → transcribe → dedup → OCR → report. | **Unreliable on Claude Desktop / Windows ([#1](https://github.com/MarcinSufa/claude-watch-video/issues/1))** — see workaround above. Use the CLI for the pipeline; come back to the read tools below for the artifacts. |
 | `read_transcript(workdir)` | Returns `transcript.md` content. | When you want just the narration. |
 | `read_report(workdir, fmt)` | Returns `report.md` / `report.html` / path to `report.docx`. | When you want the full evidence bundle. |
 | `pick_highlights(workdir, prompt, ...)` | LLM-driven moment selection with a user prompt + multi-provider (Anthropic / OpenAI / Groq). | When you want "give me only the X parts." |

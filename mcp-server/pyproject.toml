@@ -1,6 +1,6 @@
 [project]
 name = "claude-watch-video-mcp"
-version = "2.0.1"
+version = "2.0.2"
 description = "MCP server wrapper for the watch-video skill. Exposes the CLI pipeline as MCP tools for Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat, and other MCP-speaking hosts."
 readme = "README.md"
 authors = [

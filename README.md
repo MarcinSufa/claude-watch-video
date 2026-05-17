@@ -314,6 +314,19 @@ Cost per **minute of video** for the equivalent end-to-end work (transcribe + vi
 
 If you sent the same 54-second YouTube release video to Claude as a raw video upload (Opus pricing, 30 fps frame tokenization), you'd pay around **$7.50 per video**. The watch-video pipeline smart-dedups 1,620 raw frames down to ~16 keepers, has the agent read just 4-8 strategically, and produces the same answer for **under $0.25** — a **~300× reduction in token cost** on the same model.
 
+### Real-world case study: 40-minute Atlassian engineering talk
+
+A measured end-to-end run against a 40-minute technical talk about Atlassian's edge infrastructure ("I was laid off by Atlassian", 1,032 transcript segments, 79 frames after dedup). Results:
+
+- **Pipeline:** 15.66 seconds, **$0**
+- **Agent reads + composes structured architecture report with 5 diagrams + 4 charts:** ~4-5 minutes wall-clock, **~$0.04** on Haiku / **~$0.16** on Sonnet
+- **Same input on raw Claude video upload:** ~$330-400 (72,000 frames at 30 fps × Opus tokenization)
+- **Effective ratio: ~6,000-8,000× cheaper** on Haiku
+
+The resulting artifact: **[docs/examples/atlassian-architecture-report.html](docs/examples/atlassian-architecture-report.html)** — a self-contained 218 KB HTML report with Mermaid diagrams, Chart.js charts, and base64-embedded whiteboard frames from the video. Open it in any browser.
+
+Full breakdown including per-step timing, per-model cost math, replication commands, and citation format: **[docs/cost-study-atlassian-video.md](docs/cost-study-atlassian-video.md)**.
+
 ### Why it's this cheap
 
 - **yt-dlp + ffmpeg + faster-whisper run locally** — zero per-video API cost

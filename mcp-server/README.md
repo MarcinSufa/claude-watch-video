@@ -94,7 +94,7 @@ Optional, unlocks features:
 | `python-docx` | `report.docx` (gracefully skipped if missing) |
 | Atlassian API token at `~/.atlassian-token/credentials.json` | Jira fetch + post |
 
-See the main [README](../README.md#prerequisites) for install commands per platform.
+See the main [README](../README.md#prerequisites-any-path) for install commands per platform.
 
 ---
 

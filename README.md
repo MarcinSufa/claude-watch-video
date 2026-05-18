@@ -950,9 +950,10 @@ python scripts/watch_video.py PROJ-1234 --dedup --ocr \
 | `--no-audio` | Skip transcription |
 | `--no-html` | Skip `report.html` (Markdown + DOCX still produced) |
 | `--no-docx` | Skip `report.docx` (degrades gracefully if `python-docx` is missing anyway) |
-| `--highlights-prompt "..."` | Enable LLM-driven highlight selection (requires an Anthropic / OpenAI / Groq key) |
-| `--highlights-provider anthropic\|openai\|groq` | Which LLM to call for highlights. Default `anthropic`. Groq uses Llama via the OpenAI-compatible endpoint. |
+| `--highlights-prompt "..."` | Enable LLM-driven highlight selection (requires an API key for the chosen provider) |
+| `--highlights-provider anthropic\|openai\|groq\|deepseek\|gemini\|openai-compat` | Which LLM to call for highlights. Default `anthropic` (Claude Haiku 4.5). The other named providers reuse the openai SDK with a base_url override (Groq, DeepSeek, Gemini via Google's OpenAI-compatibility endpoint). `openai-compat` + `--highlights-base-url` lets you point at any OpenAI-shape endpoint (Together AI, Fireworks, OpenRouter, Ollama, vLLM, ...). |
 | `--highlights-model NAME` | Model id (defaults vary by provider) |
+| `--highlights-base-url URL` | Required only with `--highlights-provider openai-compat`; ignored otherwise |
 | `--highlights-api-key KEY` | API key for the chosen highlights provider (env vars also work) |
 | `--highlights-credentials PATH` | JSON file path for the highlights API key (separate from Atlassian creds) |
 | `--no-cache` | Bypass the per-step output cache |

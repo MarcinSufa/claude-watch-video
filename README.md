@@ -185,13 +185,15 @@ The full set of capabilities is documented in [`SKILL.md`](SKILL.md). What follo
 | Jira URL | `https://yoursite.atlassian.net/browse/PROJ-1234` | Same as above |
 | `auto` | (no arg) | Picks newest video in `~/Downloads/` modified in last 5 min |
 
-### Three Whisper providers, your choice
+### Four Whisper providers + one diarization provider
 
-| `--whisper local` *(default)* | `--whisper groq` | `--whisper openai` |
-|---|---|---|
-| `faster-whisper` runs on your CPU | Hosted Whisper-large-v3 | OpenAI Whisper-1 |
-| Offline, free, no API key | ~10× faster cold-start | Pay-per-second, 25 MB limit |
-| Best when you process many videos and don't want recurring cost | Best when you iterate on long videos and want speed | Best if you already have an OpenAI key for other things |
+| `--whisper local` *(default)* | `--whisper groq` | `--whisper openai` | `--whisper deepgram` 🆕 v2.3.0 |
+|---|---|---|---|
+| `faster-whisper` runs on your CPU | Hosted Whisper-large-v3 | OpenAI Whisper-1 | Deepgram **Nova-3 with speaker diarization** |
+| Offline, free, no API key | ~10× faster cold-start | Pay-per-second, 25 MB limit | Tags each utterance with `S0`/`S1`/...; writes `speakers.json` |
+| Best for many videos / recurring cost-conscious | Best for fast iteration on long videos | If you already have an OpenAI key | **Best for podcasts, interviews, multi-speaker calls** (~$0.0043/min) |
+
+When Deepgram runs, `transcript.md` paragraphs are prefixed with speaker labels (`**S0** (_00:15_) ...`). The new `speakers.json` summarises each anonymous speaker's first utterance — useful for agent-driven relabeling to real names in a follow-up step (`relabel_speakers` MCP tool ships in v2.3.1).
 
 ### Smart frame dedup
 

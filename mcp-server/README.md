@@ -36,9 +36,9 @@ For CI, batch processing, or when you want streaming progress, the **CLI is stil
 | **`watch_video_start(input_ref, ...)`** | Start the pipeline as a background job. Returns `{job_id, state: "running", ...}` instantly. | The primary entry point. |
 | **`watch_video_status(job_id)`** | Poll job state. Returns `running` (with `last_event` + `elapsed_seconds`) or `done` (with `meta` JSON) or `failed` (with `error` text). | Call every few seconds after `watch_video_start`. |
 | `watch_video(input_ref, ...)` ⚠️ deprecated | Synchronous one-shot pipeline call. | Avoid on Claude Desktop / Windows. Kept for back-compat. Use the start/status pair instead. |
-| `read_transcript(workdir)` | Returns `transcript.md` content. | When you want just the narration. |
+| `read_transcript(workdir)` | Returns `transcript.md` content. When the pipeline ran with `--whisper deepgram`, each paragraph is prefixed with a speaker tag (`**S0** (_00:15_) ...`). | When you want just the narration. |
 | `read_report(workdir, fmt)` | Returns `report.md` / `report.html` / path to `report.docx`. | When you want the full evidence bundle. |
-| `pick_highlights(workdir, prompt, ...)` | LLM-driven moment selection with a user prompt + multi-provider (Anthropic / OpenAI / Groq). Default model: claude-haiku-4-5. | When you want "give me only the X parts." |
+| `pick_highlights(workdir, prompt, ...)` | LLM-driven moment selection. Six providers: Anthropic (default), OpenAI, Groq, DeepSeek, Gemini, openai-compat (generic). Default model: claude-haiku-4-5. | When you want "give me only the X parts." |
 | `read_highlights(workdir)` | Returns `highlights.json`. | After `pick_highlights` ran. |
 | `post_to_jira(workdir, confirm=...)` | Posts the report to the source Jira issue. **`confirm=False` runs in dry-run; `confirm=True` writes.** | Bug-triage workflows. |
 

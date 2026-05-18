@@ -35,6 +35,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -56,8 +57,10 @@ DEEPGRAM_DEFAULT_MODEL = "nova-3"     # current SOTA Deepgram model; supports di
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
-# Deepgram doesn't use the OpenAI Whisper API shape; it's a raw multipart
-# POST with diarize/punctuate/etc as query string params.
+# Deepgram doesn't use the OpenAI Whisper API shape. The request body is
+# the raw audio bytes with Content-Type matching the codec (no multipart
+# wrapper); feature flags (diarize/punctuate/smart_format/utterances/model/
+# language) ride in the query string.
 DEEPGRAM_ENDPOINT = "https://api.deepgram.com/v1/listen"
 
 DEFAULT_CREDS_PATH = Path.home() / ".watch-video" / "credentials.json"
@@ -73,7 +76,9 @@ class Segment:
     # Optional anonymous speaker id ("S0", "S1", ...) from diarization
     # providers (Deepgram, future WhisperX). None for transcription-only
     # providers (captions / local Whisper / OpenAI / Groq). When present,
-    # write_outputs() prefixes utterances with **S0:**, **S1:**, etc.
+    # write_outputs() prefixes prose paragraphs with **S0** / **S1** / etc.
+    # (transcript.md format: `**S0** (_MM:SS_) text`) and inline-tags
+    # transcript.txt lines as `[MM:SS] S0: text`.
     speaker: str | None = None
 
 
@@ -441,39 +446,58 @@ def transcribe_deepgram(workdir: Path, model: str,
     # Deepgram supports much larger files than OpenAI/Groq (no 25 MB cap)
     # but on free tier the pre-paid balance is finite. No size guard here.
 
-    params = [
-        f"model={model}",
-        "diarize=true",
-        "punctuate=true",
-        "smart_format=true",
-        "utterances=true",
-    ]
+    # Build the query string with proper URL-encoding so a model name or
+    # language code with reserved characters (spaces, ampersands, etc.)
+    # can't break the URL or change request semantics.
+    params: dict[str, str] = {
+        "model": model,
+        "diarize": "true",
+        "punctuate": "true",
+        "smart_format": "true",
+        "utterances": "true",
+    }
     if language and language != "auto":
-        params.append(f"language={language}")
-    endpoint = f"{DEEPGRAM_ENDPOINT}?{'&'.join(params)}"
+        params["language"] = language
+    endpoint = f"{DEEPGRAM_ENDPOINT}?{urllib.parse.urlencode(params)}"
 
     emit("start", step="transcribe", provider="deepgram", model=model,
          audio_bytes=size)
     t0 = time.time()
+    # Stream the audio file as the request body instead of read_bytes() to
+    # keep memory bounded on long recordings (a 60-min uncompressed WAV is
+    # ~600 MB; reading it all into a Python bytes object is wasteful and
+    # can OOM on smaller machines). Pass the file object + an explicit
+    # Content-Length header so urllib uses it as-is.
+    audio_fp = open(audio_wav, "rb")
     req = urllib.request.Request(
-        endpoint, data=audio_wav.read_bytes(),
+        endpoint, data=audio_fp,
         headers={
             "Authorization": f"Token {api_key}",  # Deepgram uses 'Token <key>', not 'Bearer'
             "Content-Type": "audio/wav",
+            "Content-Length": str(size),
         },
+        method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            result = json.load(resp)
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode()[:300]
-        if e.code == 401:
-            die(ExitCode.AUTH_FAIL, f"Deepgram API auth failed (401): {err_body}")
-        if e.code == 429:
-            die(ExitCode.TIMEOUT, f"Deepgram rate-limited (429): {err_body}")
-        die(ExitCode.IO_FAIL, f"Deepgram API error {e.code}: {err_body}")
-    except urllib.error.URLError as e:
-        die(ExitCode.TIMEOUT, f"network error reaching Deepgram: {e}")
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                result = json.load(resp)
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode()[:300]
+            if e.code == 401:
+                die(ExitCode.AUTH_FAIL, f"Deepgram API auth failed (401): {err_body}")
+            if e.code == 429:
+                die(ExitCode.TIMEOUT, f"Deepgram rate-limited (429): {err_body}")
+            die(ExitCode.IO_FAIL, f"Deepgram API error {e.code}: {err_body}")
+        except urllib.error.URLError as e:
+            die(ExitCode.TIMEOUT, f"network error reaching Deepgram: {e}")
+    finally:
+        # Always close the audio fp -- die() raises SystemExit which would
+        # otherwise leak the handle through the request lifecycle.
+        try:
+            audio_fp.close()
+        except OSError:
+            pass
 
     # Prefer utterances (already speaker-grouped). Fall back to words->segments.
     utterances = (((result.get("results") or {}).get("utterances")) or [])
@@ -489,10 +513,15 @@ def transcribe_deepgram(workdir: Path, model: str,
             ))
     else:
         # Fallback: group words by speaker into utterance-shaped segments.
+        # IMPORTANT: when flushing on a speaker change, the previous group's
+        # `end` is the PREVIOUS WORD's end, not the new word's start. Using
+        # the new word's start would systematically undercount each group's
+        # duration by the inter-word gap and skew speakers.json airtime.
         words = (((result.get("results") or {}).get("channels") or [{}])[0]
                  .get("alternatives", [{}])[0].get("words") or [])
         current_speaker = None
         current_start = 0.0
+        current_end = 0.0  # tracks the previous word's end for accurate flush
         current_words: list[str] = []
         for w in words:
             sp = w.get("speaker")
@@ -500,7 +529,7 @@ def transcribe_deepgram(workdir: Path, model: str,
                 if current_words:
                     segments.append(Segment(
                         start=current_start,
-                        end=float(w.get("start", 0.0)),
+                        end=current_end,  # previous word's end, not next word's start
                         text=" ".join(current_words),
                         speaker=(f"S{current_speaker}" if current_speaker is not None else None),
                     ))
@@ -508,11 +537,11 @@ def transcribe_deepgram(workdir: Path, model: str,
                 current_start = float(w.get("start", 0.0))
                 current_words = []
             current_words.append(str(w.get("punctuated_word") or w.get("word") or ""))
+            current_end = float(w.get("end", current_start))
         if current_words:
-            last_end = float(words[-1].get("end", current_start))
             segments.append(Segment(
                 start=current_start,
-                end=last_end,
+                end=current_end,
                 text=" ".join(current_words),
                 speaker=(f"S{current_speaker}" if current_speaker is not None else None),
             ))
@@ -571,9 +600,15 @@ def write_outputs(workdir: Path, segments: Iterable[Segment], offset: float) -> 
         return f"{ts_part} {body}"
 
     for s in seg_list:
+        # When the run is diarized, force a paragraph break on ANY speaker
+        # mismatch -- including None->Sx and Sx->None transitions. Without
+        # this, a Deepgram segment with speaker=None (rare but possible)
+        # would get folded into the previous speaker's paragraph and the
+        # `**S0**` / `**S1**` label would no longer reflect the actual
+        # content of the paragraph.
         speaker_changed = (
-            has_speakers and current_speaker is not None
-            and s.speaker is not None and s.speaker != current_speaker
+            has_speakers and current_start is not None
+            and s.speaker != current_speaker
         )
         force_break = (
             last_end is not None and (

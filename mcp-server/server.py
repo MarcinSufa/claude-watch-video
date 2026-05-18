@@ -743,6 +743,7 @@ async def pick_highlights(
     max_n: int = 5,
     provider: str = "anthropic",
     model: str | None = None,
+    base_url: str | None = None,
     ctx: Context | None = None,
 ) -> str:
     """LLM-driven moment selection over the transcript.
@@ -752,9 +753,25 @@ async def pick_highlights(
         prompt: What to look for, e.g. 'identify the bug and the moment it
             occurs' or 'summarize the rate decision and inflation outlook'.
         max_n: Maximum number of moments to return. Default 5.
-        provider: 'anthropic' (default), 'openai', or 'groq'. Reads API key
-            from the corresponding env var or ~/.watch-video/credentials.json.
-        model: Optional model id; falls back to per-provider default.
+        provider: One of 'anthropic' (default), 'openai', 'groq', 'deepseek',
+            'gemini', or 'openai-compat'. The first four read API keys from
+            ANTHROPIC_API_KEY / OPENAI_API_KEY / GROQ_API_KEY /
+            DEEPSEEK_API_KEY env vars (or ~/.watch-video/credentials.json).
+            'gemini' uses GEMINI_API_KEY against Google's OpenAI-compatibility
+            endpoint. 'openai-compat' is a generic escape hatch for any
+            OpenAI-compatible endpoint -- requires base_url + an
+            OPENAI_COMPAT_API_KEY.
+        model: Optional model id; falls back to per-provider default
+            (claude-haiku-4-5, gpt-4o-mini, llama-3.1-70b, deepseek-chat,
+            gemini-2.0-flash, gpt-3.5-turbo respectively).
+        base_url: REQUIRED only when provider='openai-compat'. Examples:
+            Together AI -> https://api.together.xyz/v1
+            Fireworks   -> https://api.fireworks.ai/inference/v1
+            OpenRouter  -> https://openrouter.ai/api/v1
+            Ollama      -> http://localhost:11434/v1
+            vLLM        -> http://localhost:8000/v1
+            Ignored for the other named providers (their base_url is
+            built in).
 
     Returns:
         JSON string with the highlights result (prompt, provider, model,
@@ -767,6 +784,8 @@ async def pick_highlights(
     ]
     if model:
         args += ["--model", model]
+    if base_url:
+        args += ["--base-url", base_url]
     rc, stdout, stderr = await _spawn_script("highlights.py", *args, ctx=ctx)
     if rc != 0:
         raise RuntimeError(_format_child_error(rc, stderr, "highlights.py"))

@@ -37,23 +37,37 @@ from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
 
 DEFAULT_PROVIDER = "anthropic"
 PROVIDER_DEFAULT_MODEL = {
-    "anthropic": "claude-haiku-4-5-20251001",
-    "openai":    "gpt-4o-mini",
-    "groq":      "llama-3.1-70b-versatile",
+    "anthropic":     "claude-haiku-4-5-20251001",
+    "openai":        "gpt-4o-mini",
+    "groq":          "llama-3.1-70b-versatile",
+    "deepseek":      "deepseek-chat",       # also: deepseek-reasoner, deepseek-coder
+    "gemini":        "gemini-2.0-flash",    # also: gemini-2.5-pro, gemini-1.5-flash, etc.
+    "openai-compat": "gpt-3.5-turbo",       # caller should override --model for their endpoint
 }
 PROVIDER_ENV_VAR = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai":    "OPENAI_API_KEY",
-    "groq":      "GROQ_API_KEY",
+    "anthropic":     "ANTHROPIC_API_KEY",
+    "openai":        "OPENAI_API_KEY",
+    "groq":          "GROQ_API_KEY",
+    "deepseek":      "DEEPSEEK_API_KEY",
+    "gemini":        "GEMINI_API_KEY",
+    "openai-compat": "OPENAI_COMPAT_API_KEY",
 }
 PROVIDER_CREDS_FIELD = {
-    "anthropic": "anthropic_api_key",
-    "openai":    "openai_api_key",
-    "groq":      "groq_api_key",
+    "anthropic":     "anthropic_api_key",
+    "openai":        "openai_api_key",
+    "groq":          "groq_api_key",
+    "deepseek":      "deepseek_api_key",
+    "gemini":        "gemini_api_key",
+    "openai-compat": "openai_compat_api_key",
 }
-# Groq exposes an OpenAI-compatible Chat Completions endpoint; we use the
-# openai SDK with a base_url override to talk to it (avoids a separate dep).
+# OpenAI-compatible base URLs. Groq, DeepSeek, Gemini (via Google's OpenAI
+# compatibility endpoint), and the generic openai-compat provider all reuse
+# the openai SDK + a base_url override (avoids per-provider SDK dependencies).
+# Anyone with an OpenAI-shape /v1/chat/completions endpoint can be wired by
+# adding a constant here or by using --base-url at the CLI.
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 # Back-compat alias -- earlier versions exported DEFAULT_MODEL referring to
 # the Anthropic default. Keep the name working for any external callers.
@@ -231,7 +245,8 @@ def _call_openai_compatible(full_prompt: str, model: str, api_key: str,
 
 
 def pick_highlights(workdir: Path, prompt: str, max_n: int, model: str,
-                    api_key: str, provider: str = "anthropic") -> dict:
+                    api_key: str, provider: str = "anthropic",
+                    base_url: str | None = None) -> dict:
     transcript_md = workdir / "transcript.md"
     if not transcript_md.exists():
         die(ExitCode.BAD_INPUT,
@@ -262,6 +277,25 @@ def pick_highlights(workdir: Path, prompt: str, max_n: int, model: str,
     elif provider == "groq":
         response_text, tokens_in, tokens_out = _call_openai_compatible(
             full_prompt, model, api_key, base_url=GROQ_BASE_URL)
+    elif provider == "deepseek":
+        response_text, tokens_in, tokens_out = _call_openai_compatible(
+            full_prompt, model, api_key, base_url=DEEPSEEK_BASE_URL)
+    elif provider == "gemini":
+        # Google's OpenAI-compatibility endpoint serves Gemini via the same
+        # Chat Completions schema. Native Gemini API has a different shape;
+        # we use the compat endpoint to avoid a google-generativeai dep.
+        response_text, tokens_in, tokens_out = _call_openai_compatible(
+            full_prompt, model, api_key, base_url=GEMINI_BASE_URL)
+    elif provider == "openai-compat":
+        # Generic OpenAI-compatible endpoint. Caller MUST provide --base-url
+        # (or pass base_url to pick_highlights) -- no default makes sense.
+        if not base_url:
+            die(ExitCode.BAD_INPUT,
+                "provider=openai-compat requires --base-url (e.g. "
+                "https://api.together.xyz/v1, https://api.fireworks.ai/inference/v1, "
+                "https://openrouter.ai/api/v1, http://localhost:11434/v1 for Ollama, etc.)")
+        response_text, tokens_in, tokens_out = _call_openai_compatible(
+            full_prompt, model, api_key, base_url=base_url)
     else:
         die(ExitCode.BAD_INPUT, f"unknown highlights provider: {provider}")
 
@@ -560,17 +594,28 @@ def main() -> int:
     ap.add_argument("--max-n", type=int, default=DEFAULT_MAX_N,
                     help=f"max highlights to return (default {DEFAULT_MAX_N})")
     ap.add_argument("--provider",
-                    choices=("anthropic", "openai", "groq"),
+                    choices=("anthropic", "openai", "groq", "deepseek",
+                             "gemini", "openai-compat"),
                     default=DEFAULT_PROVIDER,
-                    help="LLM provider for picking highlights. 'openai' and "
-                         "'groq' use the openai SDK (Groq exposes an "
-                         "OpenAI-compatible endpoint). "
+                    help="LLM provider for picking highlights. anthropic uses "
+                         "the Anthropic SDK; the others all use the openai "
+                         "SDK with a base_url override (Groq, DeepSeek, and "
+                         "Gemini expose OpenAI-compatible endpoints). Use "
+                         "'openai-compat' with --base-url for any other "
+                         "OpenAI-compatible endpoint (Together, Fireworks, "
+                         "OpenRouter, Ollama, vLLM, ...). "
                          f"Default: {DEFAULT_PROVIDER}.")
+    ap.add_argument("--base-url", default=None,
+                    help="Required for --provider openai-compat; ignored for "
+                         "all other providers (their base_url is built-in).")
     ap.add_argument("--model", default=None,
                     help="Model id. Defaults vary by provider: "
                          f"anthropic={PROVIDER_DEFAULT_MODEL['anthropic']}, "
                          f"openai={PROVIDER_DEFAULT_MODEL['openai']}, "
-                         f"groq={PROVIDER_DEFAULT_MODEL['groq']}.")
+                         f"groq={PROVIDER_DEFAULT_MODEL['groq']}, "
+                         f"deepseek={PROVIDER_DEFAULT_MODEL['deepseek']}, "
+                         f"gemini={PROVIDER_DEFAULT_MODEL['gemini']}, "
+                         f"openai-compat={PROVIDER_DEFAULT_MODEL['openai-compat']}.")
     ap.add_argument("--anthropic-api-key", default=None,
                     help="API key for the chosen provider. WARNING: visible "
                          "in shell history; prefer env var or credentials "
@@ -588,7 +633,7 @@ def main() -> int:
     api_key = _load_api_key(args.provider, args.anthropic_api_key,
                             Path(args.credentials))
     info = pick_highlights(workdir, args.prompt, args.max_n, model, api_key,
-                           provider=args.provider)
+                           provider=args.provider, base_url=args.base_url)
     paths = write_highlights(workdir, info)
     print(json.dumps({**info, **paths}))
     return ExitCode.OK

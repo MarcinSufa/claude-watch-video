@@ -328,13 +328,16 @@ def report(workdir: Path, *, no_html: bool = False, no_docx: bool = False) -> di
 def run_highlights(workdir: Path, prompt: str, max_n: int | None,
                    model: str | None, api_key: str | None,
                    credentials: str | None,
-                   provider: str | None = None) -> dict:
+                   provider: str | None = None,
+                   base_url: str | None = None) -> dict:
     cmd = [sys.executable, str(SCRIPTS_DIR / "highlights.py"), str(workdir),
            "--prompt", prompt]
     if max_n is not None:
         cmd += ["--max-n", str(max_n)]
     if provider:
         cmd += ["--provider", provider]
+    if base_url:
+        cmd += ["--base-url", base_url]
     if model:
         cmd += ["--model", model]
     if api_key:
@@ -483,10 +486,19 @@ def main() -> int:
     ap.add_argument("--highlights-model", default=None,
                     help="Anthropic model id (default claude-haiku-4-5-20251001)")
     ap.add_argument("--highlights-provider",
-                    choices=("anthropic", "openai", "groq"), default=None,
+                    choices=("anthropic", "openai", "groq", "deepseek",
+                             "gemini", "openai-compat"),
+                    default=None,
                     help="LLM provider for highlights. Default: anthropic. "
-                         "'openai' and 'groq' use the openai SDK (Groq exposes "
-                         "an OpenAI-compatible endpoint).")
+                         "All non-anthropic providers use the openai SDK with "
+                         "a base_url override (Groq, DeepSeek, Gemini via "
+                         "Google's OpenAI-compatibility endpoint, plus the "
+                         "generic 'openai-compat' for any other endpoint "
+                         "via --highlights-base-url).")
+    ap.add_argument("--highlights-base-url", default=None,
+                    help="Required for --highlights-provider openai-compat; "
+                         "ignored for other providers (their endpoints are "
+                         "built in).")
     ap.add_argument("--highlights-api-key", default=None,
                     help="API key for the highlights provider. Reads from "
                          "ANTHROPIC_API_KEY / OPENAI_API_KEY / GROQ_API_KEY "
@@ -789,6 +801,7 @@ def main() -> int:
             # in highlights.py. Use the dedicated --highlights-credentials flag.
             credentials=args.highlights_credentials,
             provider=args.highlights_provider,
+            base_url=args.highlights_base_url,
         )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 

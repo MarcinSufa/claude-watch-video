@@ -414,13 +414,16 @@ def main() -> int:
     ap.add_argument("--model", help="whisper model id (provider-specific; see SKILL.md)")
     ap.add_argument("--lang", help="ISO language code or 'auto'")
     ap.add_argument("--whisper",
-                    choices=("auto", "captions", "local", "groq", "openai"),
+                    choices=("auto", "captions", "local", "groq", "openai", "deepgram"),
                     default="auto",
                     help="transcription source. Default 'auto' picks 'captions' "
                          "for URLs where yt-dlp pulled a VTT (free, fast), "
                          "otherwise 'local' (faster-whisper offline). Pass an "
-                         "explicit provider to override. "
-                         "'groq' / 'openai' use hosted APIs (need key, ~10x faster cold-start).")
+                         "explicit provider to override. 'groq' / 'openai' use "
+                         "hosted Whisper APIs (need key, ~10x faster cold-start). "
+                         "'deepgram' uses Nova-3 with speaker diarization "
+                         "(transcript tagged with S0/S1/..., speakers.json "
+                         "written; useful for podcasts and multi-speaker calls).")
     ap.add_argument("--whisper-api-key", default=None,
                     help="API key for hosted providers. WARNING: visible in shell history "
                          "and process listings; do not use on shared machines or recorded "

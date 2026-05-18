@@ -52,9 +52,13 @@ LOCAL_ENGLISH_DEFAULT = "small.en"
 LOCAL_MULTILINGUAL_DEFAULT = "small"
 GROQ_DEFAULT_MODEL = "whisper-large-v3"
 OPENAI_DEFAULT_MODEL = "whisper-1"
+DEEPGRAM_DEFAULT_MODEL = "nova-3"     # current SOTA Deepgram model; supports diarization
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
+# Deepgram doesn't use the OpenAI Whisper API shape; it's a raw multipart
+# POST with diarize/punctuate/etc as query string params.
+DEEPGRAM_ENDPOINT = "https://api.deepgram.com/v1/listen"
 
 DEFAULT_CREDS_PATH = Path.home() / ".watch-video" / "credentials.json"
 
@@ -66,6 +70,11 @@ class Segment:
     start: float
     end: float
     text: str
+    # Optional anonymous speaker id ("S0", "S1", ...) from diarization
+    # providers (Deepgram, future WhisperX). None for transcription-only
+    # providers (captions / local Whisper / OpenAI / Groq). When present,
+    # write_outputs() prefixes utterances with **S0:**, **S1:**, etc.
+    speaker: str | None = None
 
 
 # ---- Provider + model resolution -----------------------------------------
@@ -90,6 +99,8 @@ def pick_model_for_provider(provider: str, model_arg: str | None,
         return model_arg or GROQ_DEFAULT_MODEL, (None if lang_arg in (None, "auto") else lang_arg)
     if provider == "openai":
         return model_arg or OPENAI_DEFAULT_MODEL, (None if lang_arg in (None, "auto") else lang_arg)
+    if provider == "deepgram":
+        return model_arg or DEEPGRAM_DEFAULT_MODEL, (None if lang_arg in (None, "auto") else lang_arg)
     die(ExitCode.BAD_INPUT, f"unknown --whisper provider: {provider}")
 
 
@@ -98,7 +109,11 @@ def resolve_api_key(provider: str, explicit_key: str | None,
     """Resolve API key in order: explicit flag, env var, credentials file."""
     if explicit_key:
         return explicit_key
-    env_name = {"groq": "GROQ_API_KEY", "openai": "OPENAI_API_KEY"}[provider]
+    env_name = {
+        "groq":     "GROQ_API_KEY",
+        "openai":   "OPENAI_API_KEY",
+        "deepgram": "DEEPGRAM_API_KEY",
+    }[provider]
     if os.environ.get(env_name):
         return os.environ[env_name]
     if creds_path.exists():
@@ -401,6 +416,119 @@ def transcribe_hosted(workdir: Path, provider: str, model: str,
     return segments, {"language": detected, "language_probability": 1.0}
 
 
+def transcribe_deepgram(workdir: Path, model: str,
+                        language: str | None,
+                        api_key: str) -> tuple[list[Segment], dict]:
+    """Transcribe via Deepgram with speaker diarization enabled.
+
+    Deepgram's API is NOT OpenAI-compatible. It accepts the raw audio body
+    (no multipart wrapper), with feature flags as query-string params:
+      - `diarize=true`        -> per-word speaker ids
+      - `punctuate=true`      -> readable text
+      - `smart_format=true`   -> numbers, dates, etc. formatted naturally
+      - `model=<name>`        -> nova-3 is the current SOTA
+      - `language=<code>`     -> ISO code; omit for auto-detect (multi-lang)
+
+    The response's `results.channels[0].alternatives[0].words[]` carries
+    per-word `(start, end, word, speaker)`. We group consecutive words by
+    speaker into Segment instances so downstream paragraph-merging keeps
+    each utterance intact.
+
+    Returns segments with .speaker populated ('S0', 'S1', ...).
+    """
+    audio_wav = workdir / "audio.wav"
+    size = audio_wav.stat().st_size
+    # Deepgram supports much larger files than OpenAI/Groq (no 25 MB cap)
+    # but on free tier the pre-paid balance is finite. No size guard here.
+
+    params = [
+        f"model={model}",
+        "diarize=true",
+        "punctuate=true",
+        "smart_format=true",
+        "utterances=true",
+    ]
+    if language and language != "auto":
+        params.append(f"language={language}")
+    endpoint = f"{DEEPGRAM_ENDPOINT}?{'&'.join(params)}"
+
+    emit("start", step="transcribe", provider="deepgram", model=model,
+         audio_bytes=size)
+    t0 = time.time()
+    req = urllib.request.Request(
+        endpoint, data=audio_wav.read_bytes(),
+        headers={
+            "Authorization": f"Token {api_key}",  # Deepgram uses 'Token <key>', not 'Bearer'
+            "Content-Type": "audio/wav",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            result = json.load(resp)
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode()[:300]
+        if e.code == 401:
+            die(ExitCode.AUTH_FAIL, f"Deepgram API auth failed (401): {err_body}")
+        if e.code == 429:
+            die(ExitCode.TIMEOUT, f"Deepgram rate-limited (429): {err_body}")
+        die(ExitCode.IO_FAIL, f"Deepgram API error {e.code}: {err_body}")
+    except urllib.error.URLError as e:
+        die(ExitCode.TIMEOUT, f"network error reaching Deepgram: {e}")
+
+    # Prefer utterances (already speaker-grouped). Fall back to words->segments.
+    utterances = (((result.get("results") or {}).get("utterances")) or [])
+    segments: list[Segment] = []
+    if utterances:
+        for u in utterances:
+            speaker_id = u.get("speaker")
+            segments.append(Segment(
+                start=float(u.get("start", 0.0)),
+                end=float(u.get("end", 0.0)),
+                text=str(u.get("transcript", "")).strip(),
+                speaker=(f"S{speaker_id}" if speaker_id is not None else None),
+            ))
+    else:
+        # Fallback: group words by speaker into utterance-shaped segments.
+        words = (((result.get("results") or {}).get("channels") or [{}])[0]
+                 .get("alternatives", [{}])[0].get("words") or [])
+        current_speaker = None
+        current_start = 0.0
+        current_words: list[str] = []
+        for w in words:
+            sp = w.get("speaker")
+            if sp != current_speaker:
+                if current_words:
+                    segments.append(Segment(
+                        start=current_start,
+                        end=float(w.get("start", 0.0)),
+                        text=" ".join(current_words),
+                        speaker=(f"S{current_speaker}" if current_speaker is not None else None),
+                    ))
+                current_speaker = sp
+                current_start = float(w.get("start", 0.0))
+                current_words = []
+            current_words.append(str(w.get("punctuated_word") or w.get("word") or ""))
+        if current_words:
+            last_end = float(words[-1].get("end", current_start))
+            segments.append(Segment(
+                start=current_start,
+                end=last_end,
+                text=" ".join(current_words),
+                speaker=(f"S{current_speaker}" if current_speaker is not None else None),
+            ))
+
+    detected_lang = (((result.get("results") or {}).get("channels") or [{}])[0]
+                     .get("detected_language")) or language or "unknown"
+
+    emit("complete", step="transcribe",
+         duration_seconds=round(time.time() - t0, 2),
+         segment_count=len(segments),
+         distinct_speakers=len({s.speaker for s in segments if s.speaker}),
+         detected_language=detected_lang,
+         provider="deepgram")
+    return segments, {"language": detected_lang, "language_probability": 1.0}
+
+
 # ---- Output formatting (shared) ------------------------------------------
 
 def _format_ts(seconds: float) -> str:
@@ -411,38 +539,61 @@ def _format_ts(seconds: float) -> str:
 
 def write_outputs(workdir: Path, segments: Iterable[Segment], offset: float) -> None:
     seg_list = list(segments)
-    # Granular transcript -- timestamps offset to original video time
-    txt_lines = []
+    has_speakers = any(s.speaker for s in seg_list)
+
+    # Granular transcript -- timestamps offset to original video time. When
+    # speakers are present, include the speaker id inline: `[00:15] S0: ...`
+    txt_lines: list[str] = []
     for s in seg_list:
         ts = _format_ts(s.start + offset)
-        txt_lines.append(f"[{ts}] {s.text}")
+        if has_speakers:
+            spk = s.speaker or "S?"
+            txt_lines.append(f"[{ts}] {spk}: {s.text}")
+        else:
+            txt_lines.append(f"[{ts}] {s.text}")
 
-    # Prose transcript -- merge consecutive segments. Break on >2s gap OR >8s elapsed.
+    # Prose transcript -- merge consecutive segments. Break on >2s gap OR
+    # >8s elapsed. With diarization also force a break on speaker change so
+    # each paragraph belongs to exactly one speaker.
     PARA_GAP_SECONDS = 2.0
     PARA_MAX_LENGTH_SECONDS = 8.0
     paragraphs: list[str] = []
     current_text: list[str] = []
     current_start: float | None = None
+    current_speaker: str | None = None
     last_end: float | None = None
+
+    def _emit_paragraph(start_ts: float, text_parts: list[str], speaker: str | None) -> str:
+        ts_part = f"(_{_format_ts(start_ts + offset)}_)"
+        body = " ".join(text_parts)
+        if has_speakers:
+            return f"**{speaker or 'S?'}** {ts_part} {body}"
+        return f"{ts_part} {body}"
+
     for s in seg_list:
+        speaker_changed = (
+            has_speakers and current_speaker is not None
+            and s.speaker is not None and s.speaker != current_speaker
+        )
         force_break = (
             last_end is not None and (
                 (s.start - last_end) > PARA_GAP_SECONDS
                 or (s.start - current_start) > PARA_MAX_LENGTH_SECONDS
+                or speaker_changed
             )
         )
         if current_start is None:
             current_start = s.start
+            current_speaker = s.speaker
         elif force_break:
-            paragraphs.append(
-                f"(_{_format_ts(current_start + offset)}_) {' '.join(current_text)}"
-            )
+            paragraphs.append(_emit_paragraph(current_start, current_text, current_speaker))
             current_text = []
             current_start = s.start
+            current_speaker = s.speaker
         current_text.append(s.text)
         last_end = s.end
     if current_text and current_start is not None:
-        paragraphs.append(f"(_{_format_ts(current_start + offset)}_) {' '.join(current_text)}")
+        paragraphs.append(_emit_paragraph(current_start, current_text, current_speaker))
 
     txt_dest = workdir / "transcript.txt"
     md_dest = workdir / "transcript.md"
@@ -452,6 +603,47 @@ def write_outputs(workdir: Path, segments: Iterable[Segment], offset: float) -> 
     md_staging.write_text("\n\n".join(paragraphs) + "\n", encoding="utf-8")
     finalize(txt_staging, txt_dest)
     finalize(md_staging, md_dest)
+
+
+def write_speakers_json(workdir: Path, segments: Iterable[Segment],
+                        offset: float) -> list[dict] | None:
+    """Write <workdir>/speakers.json summarizing each unique speaker.
+
+    Each entry has:
+      - id: "S0", "S1", ...  (anonymous, assigned by the diarizer)
+      - first_utterance_ts: when the speaker first speaks (HH:MM-style str)
+      - first_utterance_text: their opening line (sample for relabeling)
+      - segment_count: how many utterances they have
+      - total_duration_seconds: total airtime
+
+    Returns the list for inclusion in transcribe's result dict; or None when
+    no diarization happened (no file written in that case).
+    """
+    seg_list = [s for s in segments if s.speaker]
+    if not seg_list:
+        return None
+    per_speaker: dict[str, dict] = {}
+    for s in seg_list:
+        info = per_speaker.setdefault(s.speaker, {
+            "id": s.speaker,
+            "first_utterance_ts": _format_ts(s.start + offset),
+            "first_utterance_start_seconds": round(s.start + offset, 2),
+            "first_utterance_text": s.text,
+            "segment_count": 0,
+            "total_duration_seconds": 0.0,
+        })
+        info["segment_count"] += 1
+        info["total_duration_seconds"] = round(
+            info["total_duration_seconds"] + max(0.0, s.end - s.start), 2)
+    # Sort by first appearance time so S0 is usually first chronologically.
+    summary = sorted(per_speaker.values(),
+                     key=lambda d: d["first_utterance_start_seconds"])
+    speakers_path = workdir / "speakers.json"
+    staging = atomic_path(speakers_path)
+    staging.write_text(json.dumps({"speakers": summary}, indent=2),
+                       encoding="utf-8")
+    finalize(staging, speakers_path)
+    return summary
 
 
 # ---- Entry point ---------------------------------------------------------
@@ -506,6 +698,11 @@ def run_inproc(
     elif whisper == "local":
         segments, info = transcribe_local(workdir, model, language)
         write_offset = offset
+    elif whisper == "deepgram":
+        api_key = resolve_api_key(whisper, whisper_api_key,
+                                  Path(whisper_credentials))
+        segments, info = transcribe_deepgram(workdir, model, language, api_key)
+        write_offset = offset
     else:
         api_key = resolve_api_key(whisper, whisper_api_key,
                                   Path(whisper_credentials))
@@ -513,8 +710,9 @@ def run_inproc(
         write_offset = offset
 
     write_outputs(workdir, segments, write_offset)
+    speakers_summary = write_speakers_json(workdir, segments, write_offset)
 
-    return {
+    result = {
         "transcript_txt": str(workdir / "transcript.txt"),
         "transcript_md": str(workdir / "transcript.md"),
         "segments": len(segments),
@@ -524,6 +722,10 @@ def run_inproc(
         "provider": whisper,
         "model": model,
     }
+    if speakers_summary:
+        result["speakers"] = speakers_summary
+        result["speakers_json"] = str(workdir / "speakers.json")
+    return result
 
 
 def main() -> int:
@@ -531,10 +733,14 @@ def main() -> int:
     ap.add_argument("workdir")
     ap.add_argument("--video", help="source video (extracts audio if audio.wav missing)")
     ap.add_argument("--whisper",
-                    choices=("captions", "local", "groq", "openai"),
+                    choices=("captions", "local", "groq", "openai", "deepgram"),
                     default="local",
                     help="transcription source. 'captions' reads a VTT file "
-                         "(free, requires --captions-vtt). Others run Whisper. "
+                         "(free, requires --captions-vtt). 'local'/'groq'/"
+                         "'openai' run Whisper (transcription only). "
+                         "'deepgram' runs Nova-3 with speaker diarization "
+                         "(returns transcripts tagged with S0/S1/... and "
+                         "writes speakers.json). "
                          "Default: local faster-whisper.")
     ap.add_argument("--captions-vtt", default=None,
                     help="path to VTT file for the captions provider. Usually "

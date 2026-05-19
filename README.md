@@ -76,7 +76,7 @@ Optional (unlock features as you need them):
 | URL mode (YouTube, Loom, …) | `pip install --user yt-dlp` |
 | Local transcription (`--whisper local`) | `pip install --user faster-whisper` |
 | Smart dedup (`--dedup`) | `pip install --user Pillow imagehash` |
-| OCR (`--ocr`) | `pip install --user pytesseract` + Tesseract binary ([SKILL.md → OCR setup](SKILL.md#on-screen-text-search-with---ocr)) |
+| OCR (`--ocr`) | `pip install --user pytesseract Pillow` + Tesseract binary ([SKILL.md → OCR setup](SKILL.md#on-screen-text-search-with---ocr)) |
 | Hosted Whisper (Groq/OpenAI/Deepgram) | API key — env var or `~/.watch-video/credentials.json` |
 | LLM highlights (`--highlights-prompt`) | Anthropic/OpenAI/Groq/DeepSeek/Gemini API key |
 | Jira auto-fetch + opt-in posting | Atlassian token at `~/.atlassian-token/credentials.json` |
@@ -181,7 +181,7 @@ Two real runs with all artifacts and timings captured verbatim — separate docs
 - **Researching public content** — point at any YouTube/Loom URL; captions-first means free + sub-5-second on most YouTube videos
 - **Podcast / multi-speaker transcription** — `--whisper deepgram` gives anonymous speaker labels (`S0`, `S1`) and a `speakers.json` summary you can later relabel with real names
 - **Compliance / privacy-first** — default `--whisper local` runs entirely on your machine; nothing is uploaded
-- **CI integration** — auto-analyze Playwright/Cypress failure videos on CI; example workflow in [SKILL.md → CI](SKILL.md#ci-integration)
+- **CI integration** — the CLI is pipeline-friendly: shell out from a GitHub Actions / GitLab CI / Jenkins step on test-failure videos, parse `meta.json` for the result. Per-step caching means re-runs after a flag tweak are near-instant.
 
 ---
 

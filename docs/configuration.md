@@ -6,7 +6,7 @@ Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, 
 
 | Flag | Purpose |
 |---|---|
-| `--workdir <PATH>` | Override the default workdir. Default is OS temp + `watch-<slug>/`: `c:\tmp\watch-<slug>\` on Windows, `/tmp/watch-<slug>/` on macOS/Linux. |
+| `--workdir <PATH>` | Override the default workdir. Default uses a fixed root per OS — `c:\tmp\watch-<slug>\` on Windows, `/tmp/watch-<slug>/` on macOS/Linux. (Note: fixed paths, not the system temp dir like `%TEMP%` / `TMPDIR`.) Pass `--workdir` to put outputs anywhere else. |
 | `--start MM:SS --end MM:SS` | Scope to a window; transcript timestamps stay original-video-time |
 | `--no-cache` | Bypass the per-step output cache |
 | `--force-step NAME[,...]` | Force a specific step (downstream auto-invalidates) |

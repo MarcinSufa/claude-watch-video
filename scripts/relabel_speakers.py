@@ -129,18 +129,36 @@ def _validate_ids_against_speakers(name_map: dict[str, str],
                                    speakers_data: dict) -> list[str]:
     """Ensure every speaker id in the name map actually appears in
     speakers.json. Returns the list of known ids for the warning message.
-    Doesn't die: the user might pass S2 when only S0/S1 exist; we warn
-    and proceed with the matched ids."""
-    known_ids = {s["id"] for s in speakers_data.get("speakers", [])}
-    unknown = set(name_map.keys()) - known_ids
+    Doesn't die on unknown ids: the user might pass S2 when only S0/S1
+    exist; we warn and proceed with the matched ids.
+
+    DOES die on a malformed speakers.json schema (missing/non-str `id`):
+    a KeyError traceback isn't useful to a user driving this through an
+    agent; surface the structural problem cleanly instead.
+    """
+    speakers = speakers_data.get("speakers")
+    if not isinstance(speakers, list):
+        die(ExitCode.IO_FAIL,
+            "speakers.json is malformed: top-level 'speakers' must be a "
+            "list of speaker objects with an 'id' field. Re-run "
+            "watch_video.py with --whisper deepgram to regenerate it.")
+    known_ids_set: set[str] = set()
+    for i, s in enumerate(speakers):
+        if not isinstance(s, dict) or not isinstance(s.get("id"), str):
+            die(ExitCode.IO_FAIL,
+                f"speakers.json is malformed: entry at index {i} is missing "
+                f"an 'id' string. Re-run watch_video.py with --whisper "
+                f"deepgram to regenerate it.")
+        known_ids_set.add(s["id"])
+    unknown = set(name_map.keys()) - known_ids_set
     if unknown:
         emit("warning", step="relabel",
              msg=f"name map references unknown speaker ids "
                  f"{sorted(unknown)} that aren't in speakers.json "
-                 f"(known: {sorted(known_ids)}). These will be ignored.",
+                 f"(known: {sorted(known_ids_set)}). These will be ignored.",
              unknown_ids=sorted(unknown),
-             known_ids=sorted(known_ids))
-    return sorted(known_ids)
+             known_ids=sorted(known_ids_set))
+    return sorted(known_ids_set)
 
 
 def _rewrite_text_atomic(path: Path, transform) -> bool:
@@ -203,13 +221,23 @@ def _update_speakers_json(workdir: Path, speakers_data: dict,
 
 
 def _regenerate_report_if_present(workdir: Path) -> dict:
-    """If a report exists in workdir, regenerate it so its content reflects
-    the relabeled transcript. Cheaper than re-running the whole pipeline:
-    just calls report.py against the same workdir. Skips if no report
-    exists (nothing to keep in sync)."""
+    """If ANY report artifact exists in workdir, regenerate the lot so the
+    artifacts stay in sync with the relabeled transcript. Cheaper than
+    re-running the whole pipeline: just calls report.py against the same
+    workdir. Skips if no report artifact exists (nothing to keep in sync).
+
+    Checks all three formats -- .md, .html, .docx -- because a user may
+    have kept .html/.docx after deleting .md (or vice versa), and we
+    shouldn't leave any surviving artifact pointing at the old speaker
+    names.
+    """
     report_md = workdir / "report.md"
-    if not report_md.exists():
-        return {"regenerated": False, "reason": "no report.md in workdir"}
+    report_html = workdir / "report.html"
+    report_docx = workdir / "report.docx"
+    any_existing = report_md.exists() or report_html.exists() or report_docx.exists()
+    if not any_existing:
+        return {"regenerated": False,
+                "reason": "no report.md/.html/.docx in workdir"}
 
     emit("start", step="regenerate_report",
          reason="speakers were relabeled; transcript-derived report content "
@@ -218,10 +246,11 @@ def _regenerate_report_if_present(workdir: Path) -> dict:
 
     report_script = Path(__file__).parent / "report.py"
     cmd = [sys.executable, str(report_script), str(workdir)]
-    # Mirror whichever report formats already exist on disk.
-    if not (workdir / "report.html").exists():
+    # Mirror whichever report formats already exist on disk -- regenerate
+    # the formats that were there before, skip the ones that weren't.
+    if not report_html.exists():
         cmd.append("--no-html")
-    if not (workdir / "report.docx").exists():
+    if not report_docx.exists():
         cmd.append("--no-docx")
 
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -259,9 +288,34 @@ def relabel(workdir: Path, name_map: dict[str, str]) -> dict[str, Any]:
     speakers_data = _load_speakers(workdir)
     known_ids = _validate_ids_against_speakers(name_map, speakers_data)
 
+    # If every requested id was unknown, there's nothing to rewrite. Don't
+    # touch speakers.json (no spurious 'relabeled_at' bump), don't regen
+    # the report (would just re-render the same content). Return early so
+    # callers see a clean no-op result instead of a "looks like work
+    # happened" status.
+    applied_map = {k: v for k, v in name_map.items() if k in known_ids}
+    if not applied_map:
+        emit("warning", step="relabel",
+             msg="no requested speaker ids matched speakers.json; nothing "
+                 "to do. Re-run with ids that appear in speakers.json.",
+             requested_ids=sorted(name_map.keys()),
+             known_ids=known_ids)
+        return {
+            "workdir": str(workdir),
+            "applied_name_map": {},
+            "ignored_unknown_ids": sorted(set(name_map.keys()) - set(known_ids)),
+            "transcript_md_rewritten": False,
+            "transcript_txt_rewritten": False,
+            "speakers_json": str(workdir / "speakers.json"),
+            "speakers": speakers_data.get("speakers", []),
+            "report": {"regenerated": False,
+                       "reason": "no applied name map"},
+            "elapsed_seconds": 0.0,
+        }
+
     emit("start", step="relabel",
          workdir=str(workdir),
-         name_map={k: v for k, v in name_map.items() if k in known_ids},
+         name_map=applied_map,
          requested_ids=sorted(name_map.keys()),
          known_ids=known_ids)
     t0 = time.time()
@@ -282,8 +336,7 @@ def relabel(workdir: Path, name_map: dict[str, str]) -> dict[str, Any]:
 
     return {
         "workdir": str(workdir),
-        "applied_name_map": {k: v for k, v in name_map.items()
-                             if k in known_ids},
+        "applied_name_map": applied_map,
         "ignored_unknown_ids": sorted(set(name_map.keys()) - set(known_ids)),
         "transcript_md_rewritten": md_changed,
         "transcript_txt_rewritten": txt_changed,

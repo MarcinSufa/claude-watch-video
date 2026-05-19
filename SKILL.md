@@ -367,12 +367,15 @@ The pattern is two tools used together:
    #    user and ask: "I see 3 speakers. From the openings these look like
    #    Alice, Bob, and Carol -- correct, or should I assign differently?"
    #
-   # d. Rewrite atomically in place. Comma form for simple names:
+   # d. Rewrite atomically in place. Same path convention as
+   #    watch_video.py above (${CLAUDE_PLUGIN_ROOT} when installed via
+   #    /plugin install; the manual install path otherwise).
+   #    Comma form for simple names:
    python ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
        <workdir> --names "S0=Joe Rogan,S1=Naval Ravikant"
    # JSON form when names contain commas (e.g. "Smith, Jr."):
-   python <scripts>/relabel_speakers.py <workdir> \
-       --names-json '{"S0":"Joe Rogan","S1":"Naval Ravikant"}'
+   python ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
+       <workdir> --names-json '{"S0":"Joe Rogan","S1":"Naval Ravikant"}'
    ```
 
    The script rewrites `transcript.md`, `transcript.txt`, and `speakers.json` (adding a `name` field while preserving `id`). If `report.md` / `.html` / `.docx` already exist in the workdir, the script auto-regenerates them so they pick up the new names too. Typical wall-clock: ~0.1 second.

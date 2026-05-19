@@ -5,7 +5,7 @@
 [![smoketest](https://github.com/MarcinSufa/claude-watch-video/actions/workflows/smoketest.yml/badge.svg)](https://github.com/MarcinSufa/claude-watch-video/actions/workflows/smoketest.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-windows%20%7C%20macOS%20%7C%20linux-lightgrey.svg)](#prerequisites)
+[![Platform](https://img.shields.io/badge/platform-windows%20%7C%20macOS%20%7C%20linux-lightgrey.svg)](#prerequisites-any-path)
 [![Plugin](https://img.shields.io/badge/Claude%20Code-plugin-purple.svg)](https://docs.claude.com/en/docs/claude-code/plugins)
 
 Turn *"watch CON-1234 and tell me what broke"* into a single command. The skill downloads the video, extracts keyframes with ffmpeg, transcribes audio with local or hosted Whisper, deduplicates near-identical frames while preserving narrated moments, optionally OCRs on-screen text, and writes a paste-ready `report.md`. Costs **$0 to a few cents** per video. See [what it costs](#what-it-costs) for the breakdown.
@@ -23,7 +23,7 @@ Turn *"watch CON-1234 and tell me what broke"* into a single command. The skill 
 
 Then ask Claude: *"Watch https://youtu.be/… and tell me what's in it."* or *"Watch PROJ-1234 and identify the bug."*
 
-Works on every Claude Code surface — CLI, IDE extensions, desktop. Same engine as the manual skill install below; the plugin path just handles the file placement.
+Works on every Claude Code surface — CLI, IDE extensions, desktop. The plugin auto-installs the same underlying skill (see [`SKILL.md`](SKILL.md) for the manual install path if you prefer to clone into `~/.claude/skills/` directly).
 
 ### CLI direct (CI / scripting / power users)
 
@@ -42,7 +42,16 @@ An MCP server install is available — full instructions in [`mcp-server/README.
 
 ### Prerequisites (any path)
 
-Required: Python 3.10+, `ffmpeg` + `ffprobe`.
+Required: **Python 3.10+** and **`ffmpeg`** (which bundles `ffprobe`).
+
+Install ffmpeg per platform:
+
+| OS | Command |
+|---|---|
+| Windows | `winget install Gyan.FFmpeg` |
+| macOS | `brew install ffmpeg` |
+| Linux (Debian/Ubuntu) | `sudo apt install ffmpeg` |
+| Linux (Fedora/RHEL) | `sudo dnf install ffmpeg` |
 
 Optional (unlock features as you need them):
 

@@ -64,11 +64,11 @@ Optional dependencies unlock more features:
 
 ## Screenshots / examples
 
-The repository README has two real end-to-end walkthroughs with embedded frame images:
+The repository README has two real end-to-end walkthroughs (commands, dedup metrics, highlights tables, per-phase timings, and links to the rendered frame JPGs in `docs/images/`):
 
 - **Powell FOMC March 2026 statement** (5:30 video, 65s wall-clock end-to-end) + **Claude Code v2.1.142 release-notes video** (54s video, 29s wall-clock) — both rendered as collapsible accordions in the README under "End-to-end walkthroughs": <https://github.com/MarcinSufa/claude-watch-video#end-to-end-walkthroughs>
 
-Hero rendered frame (FOMC 00:22 rate-decision moment): <https://github.com/MarcinSufa/claude-watch-video/blob/main/docs/images/fomc/00-22-rate-decision.jpg>
+Hero rendered frame for direct visual review (FOMC 00:22 rate-decision moment): <https://github.com/MarcinSufa/claude-watch-video/blob/main/docs/images/fomc/00-22-rate-decision.jpg>
 
 ## Latest version
 

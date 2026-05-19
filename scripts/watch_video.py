@@ -31,7 +31,10 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
+from _common import (  # noqa: E402
+    ExitCode, atomic_path, die, emit, finalize,
+    parse_time_spec, window_duration,
+)
 from _cache import (  # noqa: E402
     dir_fingerprint, file_fingerprint, get_cache, invalidate_downstream,
     is_cached, record_step, step_fingerprint,
@@ -593,6 +596,51 @@ def main() -> int:
     probe_info = probe(video)
     meta["probe"] = probe_info
     save_meta()
+
+    # Token-economy hint for the next agent reading these events. For long
+    # videos (>10 min of audio the agent will actually have to consume)
+    # without --highlights-prompt, reading the full transcript at the answer
+    # step burns ~15k+ tokens of context. Purely advisory -- doesn't change
+    # the run -- but agents that tail the stderr event stream can spot the
+    # recommendation and re-run with --highlights-prompt on the next
+    # iteration. See SKILL.md "Decide before invoking" for the full guidance.
+    #
+    # Two gates that the naive version missed:
+    #   1. Use the EFFECTIVE window duration when --start/--end is set --
+    #      a 60-min source scoped to a 30-sec window has no token-economy
+    #      problem and shouldn't trigger the hint.
+    #   2. Only emit when transcription will actually run -- --no-audio,
+    #      missing audio stream, or silent track all mean no transcript
+    #      and therefore no oversized answer-step context. Mirror the
+    #      same conditions the transcribe step uses below.
+    full_duration = probe_info.get("duration") or 0
+    _hint_start = parse_time_spec(args.start)
+    _hint_end = parse_time_spec(args.end)
+    try:
+        effective_window_s = window_duration(_hint_start, _hint_end,
+                                             full_duration)
+    except ValueError:
+        # Bad --start/--end will be reported by the frames step; for the
+        # hint just fall back to the full duration so we don't crash here.
+        effective_window_s = full_duration
+    transcription_will_run = (
+        not args.no_audio
+        and probe_info.get("has_audio")
+        and not probe_info.get("is_silent")
+    )
+    if (effective_window_s > 600 and not args.highlights_prompt
+            and transcription_will_run):
+        emit("hint",
+             step="orchestrator",
+             msg=(f"long transcribed window "
+                  f"({effective_window_s:.0f}s = "
+                  f"{effective_window_s / 60:.1f} min) and no "
+                  f"--highlights-prompt set. Consider re-running with "
+                  f"--highlights-prompt for targeted questions to save "
+                  f"~15k tokens at the agent's answer step."),
+             window_seconds=round(effective_window_s, 1),
+             full_duration_seconds=round(full_duration, 1),
+             recommendation="re-run with --highlights-prompt \"<user question>\"")
 
     # 3. Frames --------------------------------------------------------------
     # `dedup_will_mutate` is part of the frames-step fingerprint because dedup

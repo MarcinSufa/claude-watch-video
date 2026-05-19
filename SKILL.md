@@ -31,13 +31,16 @@ Parse the user's prompt FIRST, then pick flags. Don't ask clarifying questions �
 
 **Heuristic:** if the user's message ends in `?` AND names a specific thing to find out, use `--highlights-prompt`. Don't ask the user — infer.
 
-**Transcription provider priority (first match wins):**
+**Recommended order for the agent to choose `--whisper`** *(the orchestrator does NOT auto-select hosted providers from env vars — `--whisper auto` only picks `captions` for URLs with VTT subtitles, otherwise `local`. The agent inspects env vars and passes an explicit `--whisper <name>` flag.)*
 
-1. `GROQ_API_KEY` in env → `--whisper groq` (fastest hosted, ~5 s on a typical clip)
-2. `OPENAI_API_KEY` → `--whisper openai`
-3. `DEEPGRAM_API_KEY` AND multi-speaker content → `--whisper deepgram` (gives diarization)
-4. `HF_TOKEN` AND multi-speaker content → `--whisper whisperx` (free local diarization)
-5. None of the above → `--whisper auto` (captions if URL has VTT, else local faster-whisper)
+1. Multi-speaker content (podcast / interview / meeting):
+   - `DEEPGRAM_API_KEY` set → `--whisper deepgram` (hosted, ~$0.0043/min)
+   - Else `HF_TOKEN` set with pyannote terms accepted → `--whisper whisperx` (free, local)
+   - Else fall through to the single-speaker order below + warn the user diarization is unavailable
+2. Single-speaker, want fastest hosted transcription:
+   - `GROQ_API_KEY` set → `--whisper groq` (~5 s on a typical clip)
+   - Else `OPENAI_API_KEY` set → `--whisper openai`
+3. No hosted keys available → `--whisper auto` (default; picks captions if URL has VTT, otherwise local faster-whisper offline)
 
 ## Input modes
 

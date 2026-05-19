@@ -35,12 +35,12 @@ Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, 
 
 | Flag | Purpose |
 |---|---|
-| `--whisper auto\|captions\|local\|groq\|openai\|deepgram` | Source. `auto`: VTT captions if yt-dlp pulled one (free), else `local` faster-whisper. `deepgram` adds speaker diarization (writes `speakers.json`, tags transcript paragraphs with `**S0**` / `**S1**`). |
-| `--model NAME` | Whisper model id (provider-specific) |
+| `--whisper auto\|captions\|local\|groq\|openai\|deepgram\|whisperx` | Source. `auto`: VTT captions if yt-dlp pulled one (free), else `local` faster-whisper. Both `deepgram` (hosted, ~$0.0043/min) and `whisperx` (local + offline; needs `pip install whisperx` + HF token + accepting pyannote terms) add speaker diarization (write `speakers.json`, tag transcript paragraphs with `**S0**` / `**S1**`). The schema is identical for both → `relabel_speakers.py` works against either. |
+| `--model NAME` | Whisper model id. For `whisperx`, the same Whisper IDs as `local` (e.g. `small.en`, `medium`, `large-v3`). |
 | `--lang en\|pl\|...\|auto` | Audio language |
 | `--no-audio` | Skip transcription |
-| `--whisper-api-key KEY` | API key for hosted providers (env vars also work) |
-| `--whisper-credentials PATH` | JSON file path for hosted-provider keys |
+| `--whisper-api-key KEY` | API key or HF token for hosted/whisperx providers (env vars also work: `GROQ_API_KEY`, `OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, `HF_TOKEN`) |
+| `--whisper-credentials PATH` | JSON file path for provider keys/tokens (fields `groq_api_key`, `openai_api_key`, `deepgram_api_key`, `hf_token`) |
 
 ## OCR
 

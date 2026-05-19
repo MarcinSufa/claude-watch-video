@@ -78,6 +78,7 @@ Optional (unlock features as you need them):
 | Smart dedup (`--dedup`) | `pip install --user Pillow imagehash` |
 | OCR (`--ocr`) | `pip install --user pytesseract Pillow` + Tesseract binary ([SKILL.md → OCR setup](SKILL.md#on-screen-text-search-with---ocr)) |
 | Hosted Whisper (Groq/OpenAI/Deepgram) | API key — env var or `~/.watch-video/credentials.json` |
+| **Local diarization (`--whisper whisperx`)** | `pip install pyannote.audio` (the underlying lib; ~500 MB-1 GB of model weights cached on first run) + HF token (`HF_TOKEN` env or `hf_token` in credentials.json) + accept terms at **three** gated repos: [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1), [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0), and [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) |
 | LLM highlights (`--highlights-prompt`) | Anthropic/OpenAI/Groq/DeepSeek/Gemini API key |
 | Jira auto-fetch + opt-in posting | Atlassian token at `~/.atlassian-token/credentials.json` |
 
@@ -154,7 +155,7 @@ Full per-tier breakdown + replication commands: [docs/cost-study-atlassian-video
 ## Features
 
 - **Multi-source input** — local file path, public URL (`yt-dlp` supports 1500+ sites), Jira issue key (`PROJ-1234`), or `auto` (newest video in `~/Downloads/`)
-- **Five transcription modes** — `captions` (free from YouTube VTTs), `local` faster-whisper (offline, default), `groq` Whisper-large-v3, `openai` Whisper-1, and `deepgram` Nova-3 with speaker diarization (`**S0**` / `**S1**` paragraph labels for podcasts and multi-speaker recordings)
+- **Six transcription modes** — `captions` (free from YouTube VTTs), `local` faster-whisper (offline, default), `groq` Whisper-large-v3, `openai` Whisper-1, `deepgram` Nova-3 (hosted diarization, ~$0.0043/min), and `whisperx` (**free + offline** diarization via local Whisper + pyannote.audio directly; ~500 MB-1 GB of model weights cached on first run). Both diarization providers produce `**S0**` / `**S1**` paragraph labels + a `speakers.json` summary; relabel anonymous speakers with real names via `scripts/relabel_speakers.py`.
 - **Smart frame dedup** — pHash + temporal protection + transcript-aware keep rules. ~50% token reduction on screen recordings *without* losing the moment the user typed the wrong value
 - **OCR you can grep** — Tesseract on kept frames; `grep -i "unload" ocr.txt` answers "when did the user enter 90?" in milliseconds
 - **Per-step cache** — re-run with a tweaked flag and only the affected tail of the pipeline executes
@@ -200,10 +201,16 @@ python scripts/watch_video.py PROJ-1234 --start 0:30 --end 0:40
 # Fast cold-start with hosted Whisper
 python scripts/watch_video.py PROJ-1234 --whisper groq
 
-# Multi-speaker podcast with diarization (transcript tagged S0/S1/...)
+# Multi-speaker podcast with hosted diarization (Deepgram; ~$0.0043/min)
 python scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper deepgram
 
-# Relabel anonymous speakers with real names (v2.3.1+)
+# Same, but local + offline (WhisperX recipe; free; ~1 GB first-run model download)
+# Implemented via faster-whisper + pyannote.audio directly (no whisperx package
+# wrapper, which has stale dep pins broken on Python 3.14). Requires HF token
+# + accepting terms on three gated pyannote models. See SKILL.md.
+python scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper whisperx
+
+# Relabel anonymous speakers with real names (v2.3.1+; works for both providers)
 # Read speakers.json first to see who said what; then:
 python scripts/relabel_speakers.py /tmp/watch-joe-vs-naval \
   --names "S0=Joe Rogan,S1=Naval Ravikant"
@@ -263,10 +270,9 @@ Each step writes to disk atomically (staged then `os.replace`'d). Per-step finge
 
 ## Versioning + Roadmap
 
-Latest release: **v2.3.1** ([changelog](https://github.com/MarcinSufa/claude-watch-video/releases)) — adds `scripts/relabel_speakers.py` for swapping `S0` / `S1` for real names after a Deepgram run.
+Latest release: **v2.3.2** ([changelog](https://github.com/MarcinSufa/claude-watch-video/releases)) — adds `--whisper whisperx`, a free + offline local-diarization alternative to Deepgram. Same `speakers.json` schema, so `relabel_speakers.py` works against it unchanged.
 
 What's queued:
-- **v2.3.2** — WhisperX local diarization (free + offline alternative to Deepgram; same `speakers.json` schema → same relabel flow)
 - **v2.4.0+** — OCR cross-correlation for screen-recording name overlays (auto-label speakers from Zoom/Teams/Meet name tags, eliminating the manual relabel step entirely on those sources)
 
 Full roadmap: [ROADMAP.md](ROADMAP.md).

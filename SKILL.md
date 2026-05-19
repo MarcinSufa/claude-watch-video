@@ -347,7 +347,7 @@ The pattern is two tools used together:
    - The actual answer (bug cause, repro steps, summary)
    - Citation: `t_012.jpg @ ~0:20`, `transcript.txt:14`
 
-8. **(Multi-speaker content only) Relabel anonymous speakers.** When the run used `--whisper deepgram` the transcript has speakers tagged `**S0**`, `**S1**`, … and a `speakers.json` file lists each speaker's first utterance + airtime stats. Before answering the user, infer real names from context and rewrite the transcript so the answer reads naturally (`**Joe Rogan**` instead of `**S0**`).
+8. **(Multi-speaker content only) Relabel anonymous speakers.** When the run used a diarizing provider — `--whisper deepgram` (hosted, ~$0.0043/min) or `--whisper whisperx` (local + offline, requires `pip install pyannote.audio` + HF token + accepting terms on three gated pyannote repos: `speaker-diarization-3.1`, `segmentation-3.0`, and `speaker-diarization-community-1`) — the transcript has speakers tagged `**S0**`, `**S1**`, … and a `speakers.json` file lists each speaker's first utterance + airtime stats. The `speakers.json` schema is identical for both providers, so the relabel flow below is provider-agnostic. Before answering the user, infer real names from context and rewrite the transcript so the answer reads naturally (`**Joe Rogan**` instead of `**S0**`).
 
    Procedure:
 

@@ -12,6 +12,20 @@ Turn *"watch CON-1234 and tell me what broke"* into a single command. The skill 
 
 ---
 
+## What it produces
+
+A 5:30 FOMC press conference distilled to one moment, picked by Claude against the prompt *"summarize the rate decision, inflation outlook, and rate-path forecast"*:
+
+> **00:22 — the rate decision**
+>
+> <img src="docs/images/fomc/00-22-rate-decision.jpg" width="420" alt="Powell at 00:22 announcing the rate hold">
+>
+> *"Today, the FOMC decided to leave our policy rate unchanged. We see the current stance of monetary policy as appropriate to promote progress toward our maximum employment..."* Committee judges current policy stance appropriate for the dual mandate.
+
+That's one card from a real `highlights.md` rendered inline. The pipeline also produces a full `report.md` evidence bundle (transcript + all timestamped frames), `report.html`, `report.docx`, and machine-readable `highlights.json`. **65 seconds end-to-end, $0** with local Whisper. See the [Powell FOMC walkthrough](docs/walkthrough-fomc.md) for the full artifacts, dedup metrics, and per-step timings.
+
+---
+
 ## Install — pick one
 
 ### Claude Code (recommended)
@@ -39,6 +53,8 @@ Zero-host, zero-MCP, fastest path on any platform. Produces `transcript.md`, `fr
 An MCP server install is available — full instructions in [`mcp-server/README.md`](mcp-server/README.md).
 
 > ⚠️ **Honest warning:** on Windows + Claude Desktop the first run is **slow (~2-3 minutes)** because Windows Defender scans the freshly-spawned Python subprocess. The Claude Code plugin path above bypasses that entirely, and the CLI bypasses MCP entirely. **If you have the choice, use one of those.** The MCP path exists for environments where neither is an option.
+
+> **Codex CLI / Agent Skills note:** OpenAI's [openai/skills](https://github.com/openai/skills) framework presents skills as portable Agent Skills, but the install mechanism is still evolving. For Codex CLI today, **the CLI direct path above works without any agent-side install** (just `python scripts/watch_video.py ...` from your shell). If you specifically need MCP integration, the MCP path is available; if a future Codex skill-installer convention lands, this README will be updated.
 
 ### Prerequisites (any path)
 
@@ -151,168 +167,10 @@ Full per-tier breakdown + replication commands: [docs/cost-study-atlassian-video
 
 ## End-to-end walkthroughs
 
-Two real runs with all artifacts and timings captured verbatim. Collapsed by default to keep this page short — click to expand the one you care about.
+Two real runs with all artifacts and timings captured verbatim — separate docs so they don't bloat this page:
 
-<details>
-<summary>📊 <strong>Powell's FOMC statement</strong> — 5:30 video → 5 quantitative highlights at $0, 65s end-to-end <em>(click to expand)</em></summary>
-<br>
-
-The skill is run against the [Federal Reserve's official FOMC Introductory Statement, March 18, 2026](https://www.youtube.com/watch?v=SVrdJINZGIM) — Powell delivering the rate-decision opening remarks. Every artifact below is captured verbatim from the actual run; numbers and quotes are real.
-
-**The command:**
-
-```bash
-python scripts/watch_video.py "https://www.youtube.com/watch?v=SVrdJINZGIM" \
-  --workdir c:\tmp\fomc-demo --dedup --verbose
-```
-
-Then ran `highlights.py` against the prompt **"summarize the rate decision, inflation outlook, and rate-path forecast"** to pick the 5 most relevant moments.
-
-**What landed on disk:**
-
-```
-c:\tmp\fomc-demo\
-├── FOMC_Introductory_Statement_March_18_2026.mp4   13.8 MB  (329.7s, 640×360)
-├── audio.wav                                       10.5 MB  (mono, 16 kHz, mean -23.4 dB)
-├── frames/                                         60 JPEGs (3.1 MB total)
-├── transcript.txt                                  5.4 KB   (56 Whisper segments)
-├── transcript.md                                   5.3 KB   (29 prose paragraphs)
-├── report.md                                       7.0 KB   (29 timeline blocks)
-├── report.html                                     2.1 MB   (base64-embedded, browser-ready)
-├── report.docx                                     1.6 MB   (Word, editable)
-├── highlights.json                                 1.6 KB   (LLM-format picks)
-├── highlights.md                                   2.5 KB   (paste-ready)
-├── highlights.html                                 374 KB   (browser-ready)
-└── meta.json                                       5.9 KB   (versioned schema)
-```
-
-**Smart dedup on a talking-head video:**
-
-```
-"dedup": { "before": 60, "after": 60, "dropped": 0,
-           "kept_by_temporal_protection": 47,
-           "kept_by_transcript_protection": 15 }
-```
-
-Zero frames dropped — every uniform-interval frame fell within either the 5-second min-interval window or the ±1.5s transcript-paragraph protection window. This is the *correct* behavior for a continuous-narration source. (For a screen recording with long static stretches, dedup typically removes 40–60%; see the second walkthrough below.)
-
-**`highlights.md` rendered from the actual run** — frame thumbnail + verbatim transcript quote + analysis context per moment:
-
-| Time | Why it matters |
-|---|---|
-| **00:22** | Headline rate decision: *"FOMC decided to leave our policy rate unchanged."* Committee judges current stance appropriate for the dual mandate. |
-| **01:07** | Growth outlook: median SEP participant projects real GDP +2.4% in 2026 and +2.3% in 2027 — both stronger than December. Housing remains the weak link. |
-| **02:21** | Inflation snapshot: total PCE +2.8% YoY (Feb), core PCE +3.0%. Goods-sector inflation boosted by tariffs; near-term expectations elevated by oil supply disruptions. |
-| **03:23** | Target range held at **3.50%–3.75%**. Powell notes 3.4 ppts of cuts from Sep–Dec bring policy within plausible estimates of neutral. |
-| **04:28** | Rate-path forecast (the dot plot): median sees fed funds at 3.4% end-2026 and 3.1% end-2027 — unchanged from December. Meeting-by-meeting, not a preset course. |
-
-A 5:30 monetary-policy address distilled to the 5 quantitative bullets a fixed-income analyst, IR lead, or financial-services LLM agent actually needs. Drop into a research note, a Slack thread, a desk-readout email, or feed straight into a downstream model.
-
-Frame previews: [00:22 — rate decision](docs/images/fomc/00-22-rate-decision.jpg) · [02:21 — inflation snapshot](docs/images/fomc/02-21-inflation-snapshot.jpg) · [03:23 — fed funds target](docs/images/fomc/03-23-fed-funds-target.jpg) · [04:28 — dot plot](docs/images/fomc/04-28-dot-plot.jpg).
-
-**Total wall-clock: 65 s** (`elapsed_seconds: 65.05` in `meta.json`)
-
-| Phase | Time |
-|---|---|
-| Download (13.8 MB / yt-dlp) | ~5 s |
-| Probe (ffprobe + volumedetect) | <1 s |
-| Frame extraction (60 uniform frames) | ~2 s |
-| Audio extract (mono 16 kHz) | ~1 s |
-| Transcribe (faster-whisper `small.en`, **local**) | ~55 s |
-| Smart dedup | <1 s |
-| Report (md + html + docx) | <1 s |
-| Highlights (rendered by `highlights.py`) | <1 s |
-
-Transcribe is the bottleneck on a 5-minute speech with local Whisper. Swap `--whisper groq` and the same input drops under ~10s for the transcribe step on Whisper-large-v3 hosted.
-
-</details>
-
-<details>
-<summary>🆕 <strong>Claude Code v2.1.142 release-notes</strong> — 54s video → 5 actionable workflow changes in 29s <em>(click to expand)</em></summary>
-<br>
-
-A 54-second product-release video that you'd otherwise need to actually watch to know whether anything in it changes how you work. Run against ["Claude Code v2.1.142 — Full Control Over Background Agents"](https://www.youtube.com/watch?v=O664gH_szoY) with the prompt **"show me how this will improve how i work with claude"**. Same pipeline as FOMC, different value: research/learning instead of macro analysis.
-
-**The command:**
-
-```bash
-python scripts/watch_video.py "https://www.youtube.com/watch?v=O664gH_szoY" \
-  --workdir c:\tmp\claude-features-demo --dedup --verbose
-```
-
-**Smart dedup on a fast-cut release video:**
-
-```
-"dedup": { "before": 25, "after": 14, "dropped": 11,
-           "kept_by_temporal_protection": 4,
-           "kept_by_transcript_protection": 5 }
-```
-
-44% reduction (25 → 14 frames) without losing any narrated moment. The 5 transcript paragraphs each had a ±1.5s protected window; another 4 frames survived because of the 5-second min-interval rule; the remaining 11 redundant frames were dropped. This is the dedup story for fast-cut B-roll-heavy content.
-
-**Full `transcript.md` (54 seconds, 6 paragraphs):**
-
-```
-(_00:00_) Claude code 2.1.100 and 42. Background agents just got a full
-configuration API, right from the command line.
-
-(_00:08_) Eight new flags for Claude agents. Pass-model, dash effort, dash
-permission mode, dash mckpconfig, dash settings, dash add dir,
-
-(_00:19_) dash plugin dir, or dash dangerously skip permissions directly at
-dispatch time. Every background session is now fully configurable before it
-ever starts.
-
-(_00:28_) Fast mode now defaults to opus 4.7. Set cloud underscore code
-underscore opus underscore four underscore six underscore fast
-
-(_00:36_) underscore mode underscore override. Equal sign one to pin the
-previous version. And on mac, background sessions no longer vanish after sleep.
-
-(_00:46_) The demon now detects clock jumps instead of treating them as idle
-time. Full release notes at the link below. Subscribe so you never miss a drop.
-```
-
-Whisper picks up the spoken flag names imperfectly — "dash mckpconfig" is `--mcp-config`, "the demon" is "the daemon". Highlights step recovers the canonical names by treating the transcript as a hint to be reasoned over, not a literal source.
-
-**`highlights.md` for the prompt *"show me how this will improve how i work with claude"*:**
-
-| Time | Workflow win |
-|---|---|
-| **00:08** | Eight new dispatch-time flags (`--model`, `--effort`, `--permission-mode`, `--mcp-config`, `--settings`, `--add-dir`, `--plugin-dir`, `--dangerously-skip-permissions`) — tune each agent for the specific task instead of one shared profile. |
-| **00:19** | "Every background session is now fully configurable before it ever starts" — config is part of the dispatch command, so scripts and aliases can encode entire workflows. |
-| **00:28** | Fast mode now defaults to Opus 4.7. Pin the previous version via the env override if you need deterministic behavior for benchmarks. |
-| **00:36** | Mac fix: background sessions no longer vanish after laptop sleep. Long-running agents survive a closed lid. |
-| **00:46** | The daemon detects clock jumps instead of treating them as idle time. Docking/undocking, VPN switches, and timezone changes no longer silently kill in-flight agents. |
-
-A 54-second release video distilled to the 5 things a power user would actually change about how they work. Each pick is anchored to a frame and the verbatim transcript paragraph, so the user can verify the analysis against the source in two clicks.
-
-Frame previews: [00:08 — eight new dispatch flags](docs/images/claude-features/00-08-eight-flags.jpg) · [00:28 — fast-mode → Opus 4.7](docs/images/claude-features/00-28-fast-mode.jpg) · [00:46 — clock-jump fix](docs/images/claude-features/00-46-clock-jumps.jpg).
-
-**Total wall-clock: 29 s** (`elapsed_seconds: 29.16` in `meta.json`)
-
-| Phase | Time |
-|---|---|
-| Download (1.0 MB / yt-dlp) | ~2 s |
-| Probe + audio extract + frames (25 uniform) | ~2 s |
-| Transcribe (faster-whisper `small.en`, **local**) | ~24 s |
-| Smart dedup (25 → 14 frames) | <1 s |
-| Report (md + html + docx) | <1 s |
-| Highlights (rendered by `highlights.py`) | <1 s |
-
-Half a minute to know whether a release video changes anything about how you work — instead of either (a) watching 54 seconds + 5 minutes of re-watching to find the flag names, or (b) skipping it and being 6 weeks behind.
-
-**Same pipeline, also great for Jira bug-repro screen-recordings:**
-
-```bash
-python scripts/watch_video.py PROJ-2145 --dedup --ocr \
-  --highlights-prompt "what is the actual bug and at what moment does it occur" \
-  --post-to-jira
-```
-
-For a screen-recording attached to a Jira ticket, `--ocr` extracts on-screen text (button labels, field contents, error toasts) into `ocr.txt` which you can `grep` — so "when did the user enter 90?" becomes a sub-second lookup instead of a re-watch.
-
-</details>
+- 📊 **[Walkthrough — Powell's FOMC statement](docs/walkthrough-fomc.md)** — 5:30 Federal Reserve press conference distilled to 5 quantitative highlights. **/usr/bin/bash** (local Whisper), **65s** end-to-end. Demonstrates: continuous-narration source, zero-cost transcription, structured macro analysis.
+- 🆕 **[Walkthrough — Claude Code release-notes](docs/walkthrough-claude-code-release.md)** — 54s product release video reduced to 5 actionable workflow changes. **$0**, **29s** end-to-end, **44%** dedup reduction. Demonstrates: fast-cut B-roll, screen-recording context, agent-readable timestamps.
 
 ---
 

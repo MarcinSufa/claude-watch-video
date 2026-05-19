@@ -64,15 +64,18 @@ Optional dependencies unlock more features:
 
 ## Screenshots / examples
 
-The repository README has two real end-to-end walkthroughs (commands, dedup metrics, highlights tables, per-phase timings, and links to the rendered frame JPGs in `docs/images/`):
+Two real end-to-end walkthroughs (commands, dedup metrics, highlights tables, per-phase timings, and links to rendered frame JPGs):
 
-- **Powell FOMC March 2026 statement** (5:30 video, 65s wall-clock end-to-end) + **Claude Code v2.1.142 release-notes video** (54s video, 29s wall-clock) — both rendered as collapsible accordions in the README under "End-to-end walkthroughs": <https://github.com/MarcinSufa/claude-watch-video#end-to-end-walkthroughs>
+- **Powell FOMC March 2026 statement** (5:30 video, 65s wall-clock end-to-end): <https://github.com/MarcinSufa/claude-watch-video/blob/main/docs/walkthrough-fomc.md>
+- **Claude Code v2.1.142 release-notes video** (54s video, 29s wall-clock): <https://github.com/MarcinSufa/claude-watch-video/blob/main/docs/walkthrough-claude-code-release.md>
+
+The README also has a "What it produces" proof block above the fold showing the FOMC 00:22 highlight inline: <https://github.com/MarcinSufa/claude-watch-video#what-it-produces>
 
 Hero rendered frame for direct visual review (FOMC 00:22 rate-decision moment): <https://github.com/MarcinSufa/claude-watch-video/blob/main/docs/images/fomc/00-22-rate-decision.jpg>
 
 ## Latest version
 
-v1.12.0 (commit `63088e1`) — released 2026-05-15. See <https://github.com/MarcinSufa/claude-watch-video/releases/tag/v1.12.0> for the changelog.
+v2.3.0 — released 2026-05-18. See <https://github.com/MarcinSufa/claude-watch-video/releases/tag/v2.3.0> for the changelog. v2.3.0 adds Deepgram transcription with speaker diarization (for podcasts / multi-speaker calls). The v2.x line replaced the synchronous `watch_video` MCP tool with a non-blocking `watch_video_start` + `watch_video_status` polling pair (closes the v2.0.x Claude Desktop hang).
 
 ## Safety / permissions
 

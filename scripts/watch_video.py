@@ -594,6 +594,25 @@ def main() -> int:
     meta["probe"] = probe_info
     save_meta()
 
+    # Token-economy hint for the next agent reading these events. For long
+    # videos (>10 min) without --highlights-prompt, reading the full
+    # transcript at the answer step burns ~15k+ tokens of context. The hint
+    # is purely advisory -- doesn't change the run -- but agents that tail
+    # the stderr event stream can spot the recommendation and re-run with
+    # --highlights-prompt on the next iteration. See SKILL.md "Decide
+    # before invoking" for the full guidance.
+    duration_seconds = probe_info.get("duration") or 0
+    if duration_seconds > 600 and not args.highlights_prompt:
+        emit("hint",
+             step="orchestrator",
+             msg=(f"long video ({duration_seconds:.0f}s = "
+                  f"{duration_seconds / 60:.1f} min) and no "
+                  f"--highlights-prompt set. Consider re-running with "
+                  f"--highlights-prompt for targeted questions to save "
+                  f"~15k tokens at the agent's answer step."),
+             duration_seconds=round(duration_seconds, 1),
+             recommendation="re-run with --highlights-prompt \"<user question>\"")
+
     # 3. Frames --------------------------------------------------------------
     # `dedup_will_mutate` is part of the frames-step fingerprint because dedup
     # rewrites the same frames/ directory in place. Without this flag in the

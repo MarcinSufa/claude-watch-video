@@ -653,12 +653,21 @@ def transcribe_whisperx(workdir: Path, model_name: str,
             "in ~/.watch-video/credentials.json).",
             dependency="pyannote.audio")
 
-    # torch only used to pick CUDA vs CPU.
+    # torch is a hard requirement for this path -- pyannote.audio depends
+    # on torch and we use torch.from_numpy / torch.device unconditionally
+    # below to feed pre-loaded audio into the pipeline. If pyannote is
+    # installed, torch is installed (transitive dep), so this should
+    # never actually fire in practice -- but die() with a clear MISSING_DEP
+    # rather than crash with NameError downstream if someone manages to
+    # get pyannote without torch.
     try:
         import torch  # type: ignore[import-not-found]
-        device = "cuda" if torch.cuda.is_available() else "cpu"
     except ImportError:
-        device = "cpu"
+        die(ExitCode.MISSING_DEP,
+            "torch not installed. The whisperx path requires torch (a "
+            "transitive dependency of pyannote.audio). Run: pip install torch",
+            dependency="torch")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     audio_path = workdir / "audio.wav"
     if not audio_path.exists():
@@ -767,10 +776,17 @@ def transcribe_whisperx(workdir: Path, model_name: str,
             f"speaker-diarization-community-1); "
             f"(3) network error fetching the model on first run.")
 
-    # pyannote 4.x returns a DiarizeOutput wrapper; the Annotation timeline
-    # is on .speaker_diarization. (3.x returned the Annotation directly.)
-    # Support both: unwrap when the wrapper is present.
-    if hasattr(diar_annotation, "speaker_diarization"):
+    # pyannote 4.x returns a DiarizeOutput wrapper with two timeline fields:
+    # `speaker_diarization` allows overlapping speech (one speaker can overlap
+    # another), and `exclusive_speaker_diarization` is the non-overlapping
+    # variant where each time interval belongs to exactly one speaker.
+    # We use the exclusive variant -- our word-to-speaker assignment is
+    # 1:1 (each word has one speaker), so overlap-allowed intervals create
+    # ambiguity at the lookup step. (3.x returned the Annotation directly;
+    # support both for forward/back compat.)
+    if hasattr(diar_annotation, "exclusive_speaker_diarization"):
+        diar_timeline = diar_annotation.exclusive_speaker_diarization
+    elif hasattr(diar_annotation, "speaker_diarization"):
         diar_timeline = diar_annotation.speaker_diarization
     else:
         diar_timeline = diar_annotation
@@ -781,20 +797,40 @@ def transcribe_whisperx(workdir: Path, model_name: str,
     for turn, _track, speaker in diar_timeline.itertracks(yield_label=True):
         diar_intervals.append((float(turn.start), float(turn.end), str(speaker)))
 
+    # Pre-sort intervals by start time so we can bisect for the speaker
+    # lookup. The naive linear scan was O(words * intervals); for a
+    # 60-minute multi-speaker recording that's millions of comparisons.
+    # Sorted + bisect makes it O(words * log(intervals)).
+    import bisect
+    diar_intervals.sort(key=lambda iv: iv[0])
+    _interval_starts = [iv[0] for iv in diar_intervals]
+
     def _speaker_at(ts: float) -> str | None:
         """Pick the speaker whose interval contains ts. Used at each word's
-        midpoint for the word->speaker mapping. Falls back to None if no
-        diarization interval covers the timestamp (rare; usually means a
-        word landed in a non-speech gap)."""
-        for start, end, spk in diar_intervals:
-            if start <= ts <= end:
-                return spk
-        # Nearest fallback so we don't drop words that landed on a boundary.
+        midpoint for the word->speaker mapping. Falls back to the nearest
+        interval if no interval covers the timestamp (rare; usually means
+        a word landed in a non-speech gap between two speakers)."""
         if not diar_intervals:
             return None
-        nearest = min(diar_intervals,
-                      key=lambda iv: min(abs(ts - iv[0]), abs(ts - iv[1])))
-        return nearest[2]
+        # bisect_right finds the insertion point AFTER all intervals starting
+        # at or before ts. We want the interval whose start is the largest
+        # value <= ts, so we check index (idx - 1).
+        idx = bisect.bisect_right(_interval_starts, ts)
+        if idx > 0:
+            start, end, spk = diar_intervals[idx - 1]
+            if start <= ts <= end:
+                return spk
+        # ts fell outside any covering interval (gap between speakers, or
+        # before the first / after the last). Pick the nearest interval
+        # boundary so we don't drop the word.
+        candidates = []
+        if idx > 0:
+            iv = diar_intervals[idx - 1]
+            candidates.append((min(abs(ts - iv[0]), abs(ts - iv[1])), iv[2]))
+        if idx < len(diar_intervals):
+            iv = diar_intervals[idx]
+            candidates.append((min(abs(ts - iv[0]), abs(ts - iv[1])), iv[2]))
+        return min(candidates)[1] if candidates else None
 
     # Step 3: assign each word to a speaker, then group consecutive same-
     # speaker words into utterance-shaped segments. This is the same shape

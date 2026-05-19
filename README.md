@@ -200,8 +200,14 @@ python scripts/watch_video.py PROJ-1234 --start 0:30 --end 0:40
 # Fast cold-start with hosted Whisper
 python scripts/watch_video.py PROJ-1234 --whisper groq
 
-# Multi-speaker podcast with diarization
-python scripts/watch_video.py PROJ-1234 --whisper deepgram
+# Multi-speaker podcast with diarization (transcript tagged S0/S1/...)
+python scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper deepgram
+
+# Relabel anonymous speakers with real names (v2.3.1+)
+# Read speakers.json first to see who said what; then:
+python scripts/relabel_speakers.py /tmp/watch-joe-vs-naval \
+  --names "S0=Joe Rogan,S1=Naval Ravikant"
+# transcript.md and report.md/.html/.docx are atomically rewritten in place.
 
 # LLM-driven highlight selection (default model is Claude Haiku 4.5)
 python scripts/watch_video.py PROJ-1234 \
@@ -257,12 +263,11 @@ Each step writes to disk atomically (staged then `os.replace`'d). Per-step finge
 
 ## Versioning + Roadmap
 
-Latest release: **v2.3.0** ([changelog](https://github.com/MarcinSufa/claude-watch-video/releases)).
+Latest release: **v2.3.1** ([changelog](https://github.com/MarcinSufa/claude-watch-video/releases)) — adds `scripts/relabel_speakers.py` for swapping `S0` / `S1` for real names after a Deepgram run.
 
 What's queued:
-- **v2.3.1** — `relabel_speakers` tool: agent reads `speakers.json` from a Deepgram run, infers real names from context (intros, on-screen overlays), then rewrites the transcript with `**Joe**` / `**Naval**` instead of `**S0**` / `**S1**`
-- **v2.3.2** — WhisperX local diarization (free + offline alternative to Deepgram)
-- **v2.4.0+** — OCR cross-correlation for screen-recording name overlays (auto-label speakers from Zoom/Teams/Meet name tags)
+- **v2.3.2** — WhisperX local diarization (free + offline alternative to Deepgram; same `speakers.json` schema → same relabel flow)
+- **v2.4.0+** — OCR cross-correlation for screen-recording name overlays (auto-label speakers from Zoom/Teams/Meet name tags, eliminating the manual relabel step entirely on those sources)
 
 Full roadmap: [ROADMAP.md](ROADMAP.md).
 

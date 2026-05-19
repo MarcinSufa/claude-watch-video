@@ -1,6 +1,6 @@
 [project]
 name = "claude-watch-video-mcp"
-version = "2.3.0"
+version = "2.3.1"
 description = "MCP server wrapper for the watch-video skill. Exposes watch_video_start + watch_video_status (non-blocking polling pair, v2.1.0+) plus the pipeline's read tools (transcript, report, highlights) and an opt-in Jira-posting tool to MCP hosts (Claude Desktop, Codex CLI, Cursor, Continue.dev, Cline, Windsurf, Zed, VS Code Copilot Chat)."
 readme = "README.md"
 authors = [

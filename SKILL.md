@@ -347,6 +347,44 @@ The pattern is two tools used together:
    - The actual answer (bug cause, repro steps, summary)
    - Citation: `t_012.jpg @ ~0:20`, `transcript.txt:14`
 
+8. **(Multi-speaker content only) Relabel anonymous speakers.** When the run used `--whisper deepgram` the transcript has speakers tagged `**S0**`, `**S1**`, … and a `speakers.json` file lists each speaker's first utterance + airtime stats. Before answering the user, infer real names from context and rewrite the transcript so the answer reads naturally (`**Joe Rogan**` instead of `**S0**`).
+
+   Procedure:
+
+   ```bash
+   # a. Read speakers.json -- each entry has id + first_utterance_text + segment_count.
+   cat <workdir>/speakers.json
+
+   # b. Infer names from the first utterances:
+   #    - "Welcome to the show, I'm Joe..."   -> S0 is Joe
+   #    - "Thanks for having me, Joe..."      -> S1 is the guest; the host's
+   #                                             intro often names them too
+   #    - Screen-recording with OCR: the name overlay near speaker-change
+   #      timestamps is the ground truth (look at ocr.txt if --ocr was run).
+   #
+   # c. If the inference is uncertain (e.g. ambiguous intros, three+ speakers
+   #    without clear self-intros), surface the speakers.json content to the
+   #    user and ask: "I see 3 speakers. From the openings these look like
+   #    Alice, Bob, and Carol -- correct, or should I assign differently?"
+   #
+   # d. Rewrite atomically in place. Same path convention as
+   #    watch_video.py above (${CLAUDE_PLUGIN_ROOT} when installed via
+   #    /plugin install; the manual install path otherwise).
+   #    Comma form for simple names:
+   python ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
+       <workdir> --names "S0=Joe Rogan,S1=Naval Ravikant"
+   # JSON form when names contain commas (e.g. "Smith, Jr."):
+   python ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
+       <workdir> --names-json '{"S0":"Joe Rogan","S1":"Naval Ravikant"}'
+   ```
+
+   The script rewrites `transcript.md`, `transcript.txt`, and `speakers.json` (adding a `name` field while preserving `id`). If `report.md` / `.html` / `.docx` already exist in the workdir, the script auto-regenerates them so they pick up the new names too. Typical wall-clock: ~0.1 second.
+
+   **When to skip relabel:**
+   - Single-speaker content (only S0 detected) -- the inline tag is redundant; user gains nothing.
+   - User explicitly asked for raw transcript output without naming.
+   - You can't confidently infer names AND the user hasn't supplied them. Better to leave `S0` / `S1` than to mislabel.
+
 ## Exit codes
 
 | Code | Name | Meaning |

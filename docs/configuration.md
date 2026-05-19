@@ -82,3 +82,23 @@ Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, 
 | `--post-to-jira-dry-run` | Preview the Jira comment without sending |
 | `--post-to-jira-yes` | Skip the interactive confirmation prompt. Use only in non-interactive contexts (CI, automation) where `--post-to-jira` was already explicitly set. |
 | `--post-to-jira-no-embed-images` | Post the comment without uploading frame thumbnails as Jira attachments (smaller comment, no images) |
+
+## Sibling scripts
+
+`watch_video.py` is the orchestrator. Some workflows reach for sibling scripts after the orchestrator finishes:
+
+### `relabel_speakers.py` (v2.3.1+)
+
+Rewrites anonymous `**S0**` / `**S1**` speaker tags from a `--whisper deepgram` run with real names. Atomic, in place; auto-regenerates `report.md` / `.html` / `.docx` if they exist in the workdir. Typical wall-clock: ~0.1 second.
+
+```bash
+python scripts/relabel_speakers.py <workdir> --names "S0=Joe,S1=Naval"
+# Or, for names with commas:
+python scripts/relabel_speakers.py <workdir> --names-json '{"S0":"Smith, Jr."}'
+```
+
+| Flag | Purpose |
+|---|---|
+| `<workdir>` (positional) | Workdir produced by `watch_video.py --whisper deepgram`. Must contain `speakers.json`. |
+| `--names "S0=Joe,S1=Naval"` | Comma-separated speaker map. Simple form; use `--names-json` if any name contains a comma. |
+| `--names-json '{"S0":"Joe"}'` | Full JSON object form. Wins if both `--names` and `--names-json` are given. |

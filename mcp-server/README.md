@@ -41,6 +41,7 @@ For CI, batch processing, or when you want streaming progress, the **CLI is stil
 | `pick_highlights(workdir, prompt, ...)` | LLM-driven moment selection. Six providers: Anthropic (default), OpenAI, Groq, DeepSeek, Gemini, openai-compat (generic). Default model: claude-haiku-4-5. | When you want "give me only the X parts." |
 | `read_highlights(workdir)` | Returns `highlights.json`. | After `pick_highlights` ran. |
 | `post_to_jira(workdir, confirm=...)` | Posts the report to the source Jira issue. **`confirm=False` runs in dry-run; `confirm=True` writes.** | Bug-triage workflows. |
+| `fetch_jira_attachment(jira_key, mime_prefix=...)` | Downloads non-video attachments (images, PDFs, ...) from a Jira issue to disk and returns their paths. Read-only, no `confirm`. | When the agent needs to look at screenshots on a ticket but its sandbox blocks the authenticated HTTPS call. |
 
 Plus one MCP **resource**: `workdir://<path>/meta.json` — read-only access to the workdir's metadata, for hosts that prefer the resource-browser pattern.
 

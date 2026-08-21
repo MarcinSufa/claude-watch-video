@@ -144,8 +144,9 @@ def _extract_final_json(stdout: str) -> str:
     Strategy:
     1. Try parsing the whole stripped stdout (fast path: no noise).
     2. Otherwise locate the last line whose first non-space character is '{'
-       (multi-line JSON always starts a new object at the beginning of a
-       line under print(json.dumps(..., indent=2))). Parse from there to EOF.
+       or '[' (multi-line JSON always starts a new object at the beginning of
+       a line under print(json.dumps(..., indent=2)); fetch_attachment.py
+       returns a top-level array). Parse from there to EOF.
     3. Fall back to walking lines in reverse looking for a complete one-line
        JSON object.
     """
@@ -160,7 +161,7 @@ def _extract_final_json(stdout: str) -> str:
 
     lines = stdout.splitlines()
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i].lstrip().startswith("{"):
+        if lines[i].lstrip()[:1] in ("{", "["):
             candidate = "\n".join(lines[i:]).strip()
             try:
                 json.loads(candidate)
@@ -862,6 +863,45 @@ async def post_to_jira(
              "user authorization) to actually write to Jira."
     )
     return json.dumps(parsed, indent=2)
+
+
+@mcp.tool()
+async def fetch_jira_attachment(
+    jira_key: str,
+    mime_prefix: str = "image/",
+    attachment_id: str | None = None,
+    outdir: str | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Download non-video attachments (images, PDFs, ...) from a Jira issue.
+
+    READ-ONLY: this never writes to Jira, so unlike post_to_jira it takes no
+    confirm flag. It exists because an agent sandbox typically cannot make the
+    authenticated HTTPS call itself; this server can, and reads the Atlassian
+    token on the agent's behalf. Files land on disk and the agent then opens
+    them with an ordinary file read.
+
+    Args:
+        jira_key: Jira issue key, e.g. PROJ-1234.
+        mime_prefix: mimeType prefix filter. 'image/' (default), 'video/',
+            'application/pdf', or '' to take every attachment.
+        attachment_id: Download exactly this attachment, ignoring mime_prefix.
+        outdir: Destination directory. Default: <tmp>/jira-<KEY>/.
+
+    Returns:
+        JSON array, one object per attachment: {id, filename, mime_type,
+        size_bytes, path}. Files over ~50 MB are not downloaded; in bulk they
+        come back with path=null and skipped="too_large".
+    """
+    args = [jira_key, "--mime-prefix", mime_prefix]
+    if attachment_id:
+        args += ["--attachment-id", attachment_id]
+    if outdir:
+        args += ["--outdir", outdir]
+    rc, stdout, stderr = await _spawn_script("fetch_attachment.py", *args, ctx=ctx)
+    if rc != 0:
+        raise RuntimeError(_format_child_error(rc, stderr, "fetch_attachment.py"))
+    return _extract_final_json(stdout)
 
 
 # ---- Optional: expose the workdir's meta.json as an MCP resource so hosts

@@ -566,6 +566,29 @@ Default model depends on provider:
 
 Override with `--model NAME` -- the skill passes it through to the chosen provider unchanged.
 
+## Fetching non-video Jira attachments (images, PDFs)
+
+`scripts/fetch_attachment.py` downloads any attachment, not just the videos the
+pipeline consumes. It exists because an agent sandbox usually cannot make the
+authenticated Atlassian call itself, while this skill already holds the token.
+
+```bash
+# every image on the ticket -> c:/tmp/jira-PROJ-1234/
+python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234
+
+# everything, into a chosen directory
+python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --mime-prefix "" --outdir c:/tmp/proj-1234
+
+# one specific attachment
+python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --attachment-id 1001
+```
+
+Stdout is a JSON array of `{id, filename, mime_type, size_bytes, path}`; open the
+paths with an ordinary file read. Read-only: it never writes to Jira. Files above
+50 MB are refused (single-id mode) or reported with `path: null` and
+`skipped: "too_large"` (bulk mode). Via MCP the same thing is
+`fetch_jira_attachment(jira_key, mime_prefix, attachment_id, outdir)`.
+
 ## Posting `report.md` to Jira (opt-in only)
 
 `scripts/post_to_jira.py` takes a workdir and posts the generated `report.md` as a comment on the source Jira issue, via the same Atlassian REST API the skill uses for downloads.

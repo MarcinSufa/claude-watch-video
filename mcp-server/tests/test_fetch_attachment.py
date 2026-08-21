@@ -473,3 +473,183 @@ def test_extract_final_json_handles_an_array_after_noise():
     noisy = 'yt-dlp: something on stdout\n[\n  {"id": "1", "path": "x.png"}\n]\n'
     assert json.loads(server._extract_final_json(noisy)) == [{"id": "1", "path": "x.png"}]
     assert json.loads(server._extract_final_json('[{"id": "1"}]')) == [{"id": "1"}]
+
+
+# ---- PR #12 review follow-ups ---------------------------------------------
+
+def test_sanitize_filename_sanitizes_its_own_fallback():
+    """Callers pass a server-supplied id into `fallback`. fetch_jira does it
+    with the raw id, so the safety has to live inside the function."""
+    assert fetch.sanitize_filename("", fallback="attachment-../pwn") == "attachment-.._pwn"
+    assert "/" not in fetch.sanitize_filename("..", fallback="a/b")
+    assert "\\" not in fetch.sanitize_filename("..", fallback="C:\Windows\win.ini")
+
+
+def test_staging_file_also_stays_inside_outdir(creds_file, tmp_path, monkeypatch):
+    """Bytes are written to atomic_path(dest), not to dest. That is the path
+    that actually gets opened, so that is the path that must be contained."""
+    seen: list[Path] = []
+    issue = {"key": "PROJ-1", "fields": {"summary": "s", "attachment": [
+        {"id": "1", "filename": "../../a.png", "mimeType": "image/png", "size": 8,
+         "content": "https://example.atlassian.net/rest/api/3/attachment/content/1"}]}}
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(issue).encode()))
+
+    def _dl(url, dest, auth, **kw):
+        seen.append(Path(dest))
+        dest.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return 8
+    monkeypatch.setattr(fetch, "_download_with_ranges", _dl)
+
+    outdir = (tmp_path / "out").resolve()
+    fetch_attachment.run_inproc("PROJ-1", outdir=str(outdir), credentials=str(creds_file))
+    assert seen and seen[0].resolve().parent == outdir, f"staging escaped: {seen}"
+
+
+def test_size_mismatch_in_bulk_skips_instead_of_dying(creds_file, tmp_path, monkeypatch):
+    """A mismatch used to die() after earlier files were already finalized --
+    the agent saw a hard failure with files sitting in outdir."""
+    issue = {"key": "PROJ-1", "fields": {"summary": "s", "attachment": [
+        {"id": "1", "filename": "liar.png", "mimeType": "image/png", "size": 999,
+         "content": "https://example.atlassian.net/rest/api/3/attachment/content/1"},
+        {"id": "2", "filename": "ok.png", "mimeType": "image/png", "size": 8,
+         "content": "https://example.atlassian.net/rest/api/3/attachment/content/2"}]}}
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(issue).encode()))
+    monkeypatch.setattr(
+        fetch, "_download_with_ranges",
+        lambda url, dest, auth, **kw: (dest.write_bytes(b"\x89PNG\r\n\x1a\n"), 8)[1])
+
+    got = fetch_attachment.run_inproc(
+        "PROJ-1", outdir=str(tmp_path / "out"), credentials=str(creds_file))
+    by_id = {a["id"]: a for a in got}
+    assert by_id["1"]["skipped"] == "size_mismatch" and by_id["1"]["path"] is None
+    assert Path(by_id["2"]["path"]).is_file()
+
+
+def test_size_mismatch_for_a_named_attachment_still_fails(
+        creds_file, tmp_path, monkeypatch):
+    """When the caller asked for exactly one file, a mismatch is an error."""
+    issue = {"key": "PROJ-1", "fields": {"summary": "s", "attachment": [
+        {"id": "1", "filename": "liar.png", "mimeType": "image/png", "size": 999,
+         "content": "https://example.atlassian.net/rest/api/3/attachment/content/1"}]}}
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(issue).encode()))
+    monkeypatch.setattr(
+        fetch, "_download_with_ranges",
+        lambda url, dest, auth, **kw: (dest.write_bytes(b"\x89PNG\r\n\x1a\n"), 8)[1])
+    with pytest.raises(SystemExit) as e:
+        fetch_attachment.run_inproc(
+            "PROJ-1", attachment_id="1", outdir=str(tmp_path / "out"),
+            credentials=str(creds_file))
+    assert e.value.code == ExitCode.IO_FAIL
+
+
+def test_attachment_count_is_capped_and_the_drop_is_reported(
+        creds_file, tmp_path, monkeypatch, capsys):
+    """The agent Reads these files. 80 screenshots is not a useful answer, and
+    a silent top-N is worse than a loud one."""
+    atts = [{"id": str(i), "filename": f"s{i}.png", "mimeType": "image/png", "size": 8,
+             "content": f"https://example.atlassian.net/rest/api/3/attachment/content/{i}"}
+            for i in range(30)]
+    issue = {"key": "PROJ-1", "fields": {"summary": "s", "attachment": atts}}
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(issue).encode()))
+    monkeypatch.setattr(
+        fetch, "_download_with_ranges",
+        lambda url, dest, auth, **kw: (dest.write_bytes(b"\x89PNG\r\n\x1a\n"), 8)[1])
+
+    got = fetch_attachment.run_inproc(
+        "PROJ-1", outdir=str(tmp_path / "out"), credentials=str(creds_file),
+        max_files=5)
+    downloaded = [a for a in got if a.get("path")]
+    assert len(downloaded) == 5
+    assert "25" in capsys.readouterr().err, "the dropped count must be announced"
+
+
+# ---- credential handling on the wire --------------------------------------
+
+def test_plain_http_content_url_is_refused(creds_file, tmp_path, monkeypatch):
+    """http://<site>/... passes a host check but sends Basic auth in clear."""
+    issue = {"key": "PROJ-1", "fields": {"summary": "s", "attachment": [
+        {"id": "1", "filename": "a.png", "mimeType": "image/png", "size": 8,
+         "content": "http://example.atlassian.net/rest/api/3/attachment/content/1"}]}}
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(issue).encode()))
+    with pytest.raises(SystemExit) as e:
+        fetch_attachment.run_inproc(
+            "PROJ-1", outdir=str(tmp_path / "out"), credentials=str(creds_file))
+    assert e.value.code == ExitCode.BAD_INPUT
+
+
+def test_explicit_https_port_is_still_the_same_host(creds_file, tmp_path, monkeypatch):
+    """netloc carries :port and userinfo; the comparison is on the hostname."""
+    issue = {"key": "PROJ-1", "fields": {"summary": "s", "attachment": [
+        {"id": "1", "filename": "a.png", "mimeType": "image/png", "size": 8,
+         "content": "https://example.atlassian.net:443/rest/api/3/attachment/content/1"}]}}
+    monkeypatch.setattr(fetch.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(issue).encode()))
+    monkeypatch.setattr(
+        fetch, "_download_with_ranges",
+        lambda url, dest, auth, **kw: (dest.write_bytes(b"\x89PNG\r\n\x1a\n"), 8)[1])
+    got = fetch_attachment.run_inproc(
+        "PROJ-1", outdir=str(tmp_path / "out"), credentials=str(creds_file))
+    assert Path(got[0]["path"]).is_file()
+
+
+def test_authorization_does_not_survive_a_redirect(tmp_path, monkeypatch):
+    """urllib follows redirects and, on 3.10, re-sends headers set with
+    add_header. The credential must go on as an unredirected header so a hop
+    off the site cannot carry it."""
+    captured: list = []
+
+    def _urlopen(req, timeout=None):
+        captured.append(req)
+        return _FakeResp(b"\x89PNG\r\n\x1a\n", {"Content-Length": "8"})
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", _urlopen)
+
+    fetch._download_with_ranges(
+        "https://example.atlassian.net/rest/api/3/attachment/content/1",
+        tmp_path / "a.png", "Zm9vOmJhcg==")
+
+    assert captured, "no request was made"
+    for req in captured:
+        assert "Authorization" not in req.headers, (
+            "Authorization is a redirectable header; use add_unredirected_header")
+        assert any(k.lower() == "authorization" for k in req.unredirected_hdrs), (
+            "the credential must still be sent to the original host")
+
+
+# ---- the MCP tool writes to disk, so the destination is not the LLM's call --
+
+def _server():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import server
+    return server
+
+
+def test_mcp_outdir_must_stay_under_the_tmp_root(tmp_path):
+    """A prompt-injected ticket can ask the agent for outdir=~/.ssh, or the
+    directory holding the Atlassian token. Filenames are sanitized, but
+    'authorized_keys' is a perfectly valid filename."""
+    server = _server()
+    root = server.DEFAULT_WORKDIR_ROOT.resolve()
+
+    ok = server._confine_outdir(str(root / "jira-PROJ-1234"), "PROJ-1234")
+    assert Path(ok).resolve() == (root / "jira-PROJ-1234").resolve()
+    assert server._confine_outdir(None, "PROJ-1234") is None
+
+    for evil in (str(Path.home() / ".ssh"),
+                 str(Path.home()),
+                 str(root.parent),
+                 str(root / ".." / "windows")):
+        with pytest.raises(ValueError):
+            server._confine_outdir(evil, "PROJ-1234")
+
+
+def test_mcp_tool_docstring_does_not_claim_to_be_read_only():
+    """Hosts auto-approve tools labeled read-only. This one writes files."""
+    server = _server()
+    doc = server.fetch_jira_attachment.__doc__ or ""
+    assert "READ-ONLY" not in doc
+    assert "write" in doc.lower() and "disk" in doc.lower()

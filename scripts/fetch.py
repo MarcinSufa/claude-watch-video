@@ -208,20 +208,28 @@ def _basic_auth(email: str, token: str) -> str:
     return base64.b64encode(f"{email}:{token}".encode()).decode()
 
 
-def sanitize_filename(name: str, fallback: str) -> str:
-    """Reduce an attachment filename to a single safe path component.
-
-    Every character outside [A-Za-z0-9._-] becomes '_', so separators and
-    drive letters can't steer the write outside the target directory. Names
-    that survive as '', '.' or '..' fall back to the caller's stem.
-    """
+def _flatten_name(name: str) -> str:
+    """Map anything outside [A-Za-z0-9._-] to '_' and drop trailing dots."""
     safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
     # Windows drops trailing dots at create time, so "a.png." and "a.png"
     # are one file -- strip them here instead, where the caller's duplicate
     # check can still see the collision.
-    safe = safe.rstrip(".")
+    return safe.rstrip(".")
+
+
+def sanitize_filename(name: str, fallback: str) -> str:
+    """Reduce an attachment filename to a single safe path component.
+
+    Separators and drive letters cannot steer the write outside the target
+    directory. The fallback is sanitized too: callers build it from the
+    attachment id, which is server-supplied like the filename, so leaving it
+    raw would just move the same hole one line down.
+    """
+    safe = _flatten_name(name)
     if not safe.strip("._"):
-        return fallback
+        safe = _flatten_name(fallback)
+    if not safe.strip("._"):
+        return "attachment"
     return safe
 
 
@@ -234,8 +242,7 @@ def _enumerate_attachments(jira_key: str, creds: dict,
     """
     auth = _basic_auth(creds["email"], creds["token"])
     url = f"https://{creds['site']}/rest/api/3/issue/{jira_key}?fields=attachment,summary"
-    req = urllib.request.Request(url,
-        headers={"Authorization": f"Basic {auth}", "Accept": "application/json"})
+    req = _authed_request(url, auth, {"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             issue = json.load(resp)
@@ -254,6 +261,20 @@ def _enumerate_attachments(jira_key: str, creds: dict,
     matched = [a for a in attachments
                if a.get("mimeType", "").startswith(mime_prefix)]
     return issue, matched
+
+
+def _authed_request(url: str, auth: str,
+                    headers: dict | None = None) -> urllib.request.Request:
+    """Build a GET carrying Basic auth that a redirect cannot forward.
+
+    urllib follows redirects, and on 3.10 it re-sends headers set the ordinary
+    way to whatever host it lands on. Attachment downloads DO redirect (Jira
+    hands off to its media CDN with a signed URL), so the credential goes on
+    as an unredirected header: hop 0 gets it, later hops do not.
+    """
+    req = urllib.request.Request(url, headers=headers or {})
+    req.add_unredirected_header("Authorization", f"Basic {auth}")
+    return req
 
 
 class AttachmentTooLarge(Exception):
@@ -290,7 +311,7 @@ def _download_with_ranges(url: str, dest: Path, auth: str,
         raise AttachmentTooLarge(observed, max_bytes)  # type: ignore[arg-type]
 
     try:
-        head_req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+        head_req = _authed_request(url, auth)
         with urllib.request.urlopen(head_req, timeout=30) as resp:
             total = int(resp.headers.get("Content-Length", "0"))
             if max_bytes is not None and total > max_bytes:
@@ -318,8 +339,7 @@ def _download_with_ranges(url: str, dest: Path, auth: str,
                 end = min(written + chunk_bytes - 1, total - 1)
                 for attempt in range(max_retries):
                     try:
-                        req = urllib.request.Request(url, headers={
-                            "Authorization": f"Basic {auth}",
+                        req = _authed_request(url, auth, {
                             "Range": f"bytes={written}-{end}",
                             "Accept-Encoding": "identity",
                         })

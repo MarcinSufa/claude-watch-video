@@ -7,7 +7,9 @@ the MCP tool `fetch_jira_attachment`) then opens them with an ordinary file
 read -- which is the whole point, since the sandbox and the auto-mode
 classifier block an agent from making the HTTPS call itself.
 
-READ-ONLY: nothing here writes to Jira.
+Nothing here writes to Jira. It DOES write files to `outdir`, which the CLI
+leaves to the caller; the MCP wrapper confines it to the tmp root, because
+there the destination comes from a model that has been reading ticket text.
 
 Stdout: one JSON array on success, one object per attachment:
     [{"id", "filename", "mime_type", "size_bytes", "path", "skipped"?}, ...]
@@ -32,6 +34,19 @@ import fetch  # noqa: E402
 # 200 MB one is never what was wanted, and the range downloader would spend
 # minutes on it.
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+# The agent reads every file this returns, so a ticket with 80 screenshots is
+# not a useful answer. Whatever is dropped is named in the result and on stderr.
+MAX_ATTACHMENT_FILES = 25
+
+
+class SizeMismatch(Exception):
+    """The body's length disagreed with the size Jira advertised."""
+
+    def __init__(self, att_id: str, observed: int, expected: int):
+        super().__init__(
+            f"download size mismatch for {att_id}: got {observed}, expected {expected}")
+        self.att_id, self.observed, self.expected = att_id, observed, expected
 
 DEFAULT_OUTDIR_ROOT = Path("c:/tmp") if sys.platform == "win32" else Path("/tmp")
 
@@ -62,20 +77,23 @@ def _download_one(attachment: dict, outdir: Path, auth: str, site: str,
     used_names.add(name)
 
     url = attachment["content"]
-    host = urllib.parse.urlparse(url).netloc
-    if host.lower() != site.lower():
+    parsed = urllib.parse.urlparse(url)
+    # hostname, not netloc: netloc carries :port and userinfo, so the
+    # credentialed host with an explicit :443 would otherwise be rejected.
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != site.lower():
         die(ExitCode.BAD_INPUT,
-            f"attachment {att_id} points at {host or url!r}, not the "
-            f"credentialed site {site}; refusing to send credentials there",
+            f"attachment {att_id} points at {parsed.scheme}://{parsed.hostname}, "
+            f"not https://{site}; refusing to send credentials there",
             attachment_id=att_id)
 
     dest = outdir / name
-    if dest.resolve().parent != outdir:
-        # Belt and braces: sanitize_filename already flattens separators.
-        die(ExitCode.BAD_INPUT,
-            f"refusing to write attachment {att_id} outside {outdir}",
-            attachment_id=att_id)
     staging = atomic_path(dest)
+    # Both paths, because staging is the one that actually gets opened.
+    for p in (dest, staging):
+        if p.resolve().parent != outdir:
+            die(ExitCode.BAD_INPUT,
+                f"refusing to write attachment {att_id} outside {outdir}",
+                attachment_id=att_id)
     emit("start", step="download_attachment", attachment_id=att_id,
          filename=attachment.get("filename"), size_bytes=attachment.get("size"))
     t0 = time.time()
@@ -91,8 +109,7 @@ def _download_one(attachment: dict, outdir: Path, auth: str, site: str,
     expected = attachment.get("size")
     if expected and total != expected:
         staging.unlink(missing_ok=True)
-        die(ExitCode.IO_FAIL,
-            f"download size mismatch for {att_id}: got {total}, expected {expected}")
+        raise SizeMismatch(att_id, total, expected)
     finalize(staging, dest)
     emit("complete", step="download_attachment",
          duration_seconds=round(time.time() - t0, 2),
@@ -114,6 +131,7 @@ def run_inproc(
     outdir: str | None = None,
     credentials: str | None = None,
     max_bytes: int = MAX_ATTACHMENT_BYTES,
+    max_files: int = MAX_ATTACHMENT_FILES,
 ) -> list[dict]:
     """Download the matching attachments of `jira_key`. Returns result records.
 
@@ -152,19 +170,29 @@ def run_inproc(
     results: list[dict] = []
     used_names: set[str] = set()
 
-    def _too_large_record(att: dict, observed: int) -> dict:
+    def _skip_record(att: dict, reason: str, observed: int, why: str) -> dict:
         emit("warning", step="download_attachment",
-             msg=f"skipping {att.get('filename')}: {_human(observed)} exceeds "
-                 f"{_human(max_bytes)} limit",
-             attachment_id=str(att["id"]))
+             msg=f"skipping {att.get('filename')}: {why}",
+             attachment_id=str(att["id"]), reason=reason)
         return {
             "id": str(att["id"]),
             "filename": att.get("filename"),
             "mime_type": att.get("mimeType"),
             "size_bytes": observed,
             "path": None,
-            "skipped": "too_large",
+            "skipped": reason,
         }
+
+    if len(matched) > max_files:
+        dropped = matched[max_files:]
+        emit("warning", step="jira_attachments",
+             msg=f"{len(matched)} attachments match; downloading the first "
+                 f"{max_files}, dropping {len(dropped)}. Re-run with "
+                 f"--attachment-id or a narrower --mime-prefix for the rest.",
+             matched=len(matched), downloaded=max_files, dropped=len(dropped))
+        matched = matched[:max_files]
+    else:
+        dropped = []
 
     for att in matched:
         # The declared size is a hint that saves a request; the real ceiling
@@ -175,7 +203,9 @@ def run_inproc(
                 die(ExitCode.BAD_INPUT,
                     f"attachment {att['id']} ({att.get('filename')}) is "
                     f"{_human(declared)}, over the {_human(max_bytes)} limit")
-            results.append(_too_large_record(att, declared))
+            results.append(_skip_record(
+                att, "too_large", declared,
+                f"{_human(declared)} exceeds the {_human(max_bytes)} limit"))
             continue
         try:
             results.append(
@@ -187,7 +217,22 @@ def run_inproc(
                     f"{_human(e.observed)} on the wire, over the "
                     f"{_human(max_bytes)} limit")
             # One fat attachment must not kill the rest of the batch.
-            results.append(_too_large_record(att, e.observed))
+            results.append(_skip_record(
+                att, "too_large", e.observed,
+                f"{_human(e.observed)} on the wire exceeds the "
+                f"{_human(max_bytes)} limit"))
+        except SizeMismatch as e:
+            if attachment_id is not None:
+                die(ExitCode.IO_FAIL, str(e))
+            # Same reasoning as too_large: earlier files are already on disk,
+            # so one bad body must not turn the batch into a hard failure.
+            results.append(_skip_record(
+                att, "size_mismatch", e.observed,
+                f"got {e.observed} bytes, Jira advertised {e.expected}"))
+
+    results.extend(_skip_record(att, "over_file_limit", att.get("size") or 0,
+                                f"beyond the first {max_files} attachments")
+                   for att in dropped)
     return results
 
 
@@ -203,6 +248,9 @@ def main() -> int:
                     help="destination dir (default: <tmp>/jira-<KEY>/)")
     ap.add_argument("--max-bytes", type=int, default=MAX_ATTACHMENT_BYTES,
                     help="per-file size ceiling")
+    ap.add_argument("--max-files", type=int, default=MAX_ATTACHMENT_FILES,
+                    help="how many attachments to download; the rest are "
+                         "listed with skipped=over_file_limit")
     ap.add_argument("--credentials", default=str(fetch.DEFAULT_CREDS_PATH),
                     help="path to the Atlassian credentials JSON")
     args = ap.parse_args()
@@ -214,6 +262,7 @@ def main() -> int:
         outdir=args.outdir,
         credentials=args.credentials,
         max_bytes=args.max_bytes,
+        max_files=args.max_files,
     )
     print(json.dumps(results))
     return ExitCode.OK

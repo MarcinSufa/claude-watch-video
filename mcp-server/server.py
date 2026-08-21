@@ -865,6 +865,27 @@ async def post_to_jira(
     return json.dumps(parsed, indent=2)
 
 
+def _confine_outdir(outdir: str | None, jira_key: str) -> str | None:
+    """Keep a caller-supplied destination under DEFAULT_WORKDIR_ROOT.
+
+    The destination arrives from the model, which reads Jira tickets --
+    attacker-controlled text. Sanitized filenames do not help when the
+    DIRECTORY is the attack: 'authorized_keys' and 'config' are ordinary
+    names, and finalize() replaces whatever is already there. So the tool
+    accepts a subdirectory of the tmp root and nothing else; the CLI, driven
+    by a human, keeps the unrestricted --outdir flag.
+    """
+    if outdir is None:
+        return None
+    root = DEFAULT_WORKDIR_ROOT.expanduser().resolve()
+    p = Path(outdir).expanduser().resolve()
+    if p == root or not p.is_relative_to(root):
+        raise ValueError(
+            f"outdir must be a subdirectory of {root} (got {p}). Omit outdir "
+            f"to use the default {root / f'jira-{jira_key}'}.")
+    return str(p)
+
+
 @mcp.tool()
 async def fetch_jira_attachment(
     jira_key: str,
@@ -875,8 +896,9 @@ async def fetch_jira_attachment(
 ) -> str:
     """Download non-video attachments (images, PDFs, ...) from a Jira issue.
 
-    READ-ONLY: this never writes to Jira, so unlike post_to_jira it takes no
-    confirm flag. It exists because an agent sandbox typically cannot make the
+    Nothing is written to Jira, so unlike post_to_jira there is no confirm
+    flag. It DOES write files to the local disk, under <tmp> only.
+    It exists because an agent sandbox typically cannot make the
     authenticated HTTPS call itself; this server can, and reads the Atlassian
     token on the agent's behalf. Files land on disk and the agent then opens
     them with an ordinary file read.
@@ -886,13 +908,16 @@ async def fetch_jira_attachment(
         mime_prefix: mimeType prefix filter. 'image/' (default), 'video/',
             'application/pdf', or '' to take every attachment.
         attachment_id: Download exactly this attachment, ignoring mime_prefix.
-        outdir: Destination directory. Default: <tmp>/jira-<KEY>/.
+        outdir: Destination directory. Must be under the tmp root; anything
+            else is rejected. Default: <tmp>/jira-<KEY>/.
 
     Returns:
         JSON array, one object per attachment: {id, filename, mime_type,
-        size_bytes, path}. Files over ~50 MB are not downloaded; in bulk they
-        come back with path=null and skipped="too_large".
+        size_bytes, path}. Anything not downloaded comes back with path=null
+        and skipped set to "too_large" (over ~50 MB), "size_mismatch", or
+        "over_file_limit" (past the first 25 attachments).
     """
+    outdir = _confine_outdir(outdir, jira_key)
     args = [jira_key, "--mime-prefix", mime_prefix]
     if attachment_id:
         args += ["--attachment-id", attachment_id]

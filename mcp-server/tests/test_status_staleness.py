@@ -12,6 +12,7 @@ watch_video_start already treats a status written by another pid as stale
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -51,12 +52,52 @@ async def test_running_in_this_server_stays_running(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_status_without_a_pid_is_not_called_stale(tmp_path):
-    """Status files written by an older version carry no server_pid. Absence
-    of evidence is not evidence of death."""
+async def test_status_without_a_pid_is_stale(tmp_path):
+    """A running record written by THIS binary always carries server_pid, so
+    one without the field came from an older build -- i.e. not this process.
+
+    Treating it as still-running is also what main's watch_video_start did
+    NOT do: there, `recorded_pid == os.getpid()` was false for None and the
+    job was restarted. The two callers have to agree."""
     _running(tmp_path)
     out = json.loads(await server.watch_video_status(str(tmp_path)))
+    assert out["state"] == "stale", out
+
+
+@pytest.mark.asyncio
+async def test_start_restarts_a_pidless_running_job(tmp_path, monkeypatch):
+    """Regression guard for the recovery path itself: before this fix landed,
+    `if not _job_is_orphaned(existing)` handed back the reuse payload for a
+    pid-less file, so a job orphaned by an older build could never be
+    restarted -- the opposite of what this PR is for."""
+    ran: list = []
+
+    async def _fake_pipeline(job_id, args):
+        ran.append((job_id, args))
+    monkeypatch.setattr(server, "_run_pipeline_and_update_status", _fake_pipeline)
+
+    _running(tmp_path)  # no server_pid
+    out = json.loads(await server.watch_video_start(
+        input_ref="PROJ-1234", workdir=str(tmp_path)))
     assert out["state"] == "running"
+    assert "note" not in out, f"reused a job nobody is running: {out}"
+    await asyncio.sleep(0)  # let the background task start
+    assert ran, "no fresh pipeline was started"
+
+
+@pytest.mark.asyncio
+async def test_start_reuses_a_job_this_process_owns(tmp_path, monkeypatch):
+    """The other side of the same rule: a job this very process started is
+    not restarted underneath itself."""
+    async def _fake_pipeline(job_id, args):  # pragma: no cover - must not run
+        raise AssertionError("started a second pipeline over a live one")
+    monkeypatch.setattr(server, "_run_pipeline_and_update_status", _fake_pipeline)
+
+    _running(tmp_path, server_pid=os.getpid())
+    out = json.loads(await server.watch_video_start(
+        input_ref="PROJ-1234", workdir=str(tmp_path)))
+    assert out["state"] == "running"
+    assert "note" in out and "already running" in out["note"]
 
 
 @pytest.mark.asyncio
@@ -82,5 +123,5 @@ def test_start_and_status_share_one_staleness_rule():
     theirs = {"state": "running", "server_pid": os.getpid() + 1_000_000}
     assert server._job_is_orphaned(theirs) is True
     assert server._job_is_orphaned(mine) is False
-    assert server._job_is_orphaned({"state": "running"}) is False
+    assert server._job_is_orphaned({"state": "running"}) is True  # no pid = not ours
     assert server._job_is_orphaned({"state": "done", "server_pid": 1}) is False

@@ -245,15 +245,16 @@ def _job_is_orphaned(status: dict) -> bool:
 
     Deliberately not a liveness probe on the pid: pids get reused, and
     os.kill(pid, 0) TERMINATES the target on Windows. "Not this process" is
-    the same rule watch_video_start already applies before starting fresh.
-
-    A status file with no server_pid predates that field; absence of evidence
-    is not evidence of death, so those keep reporting running.
+    the rule watch_video_start already applied before starting fresh, and
+    this is that rule inverted, unchanged -- including for a missing
+    server_pid. Every running record this binary writes stamps the field, so
+    a record without it came from an older build and cannot be ours. Letting
+    None mean "still running" would have blocked start from recovering
+    exactly the orphaned jobs this exists to recover.
     """
     if status.get("state") != "running":
         return False
-    recorded_pid = status.get("server_pid")
-    return recorded_pid is not None and recorded_pid != os.getpid()
+    return status.get("server_pid") != os.getpid()
 
 
 def _read_status(workdir: str) -> dict | None:

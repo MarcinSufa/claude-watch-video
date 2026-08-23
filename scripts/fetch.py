@@ -21,13 +21,13 @@ import argparse
 import base64
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
@@ -208,12 +208,41 @@ def _basic_auth(email: str, token: str) -> str:
     return base64.b64encode(f"{email}:{token}".encode()).decode()
 
 
-def _enumerate_attachments(jira_key: str, creds: dict) -> tuple[dict, list[dict]]:
-    """Return (issue_meta, video_attachments)."""
+def _flatten_name(name: str) -> str:
+    """Map anything outside [A-Za-z0-9._-] to '_' and drop trailing dots."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    # Windows drops trailing dots at create time, so "a.png." and "a.png"
+    # are one file -- strip them here instead, where the caller's duplicate
+    # check can still see the collision.
+    return safe.rstrip(".")
+
+
+def sanitize_filename(name: str, fallback: str) -> str:
+    """Reduce an attachment filename to a single safe path component.
+
+    Separators and drive letters cannot steer the write outside the target
+    directory. The fallback is sanitized too: callers build it from the
+    attachment id, which is server-supplied like the filename, so leaving it
+    raw would just move the same hole one line down.
+    """
+    safe = _flatten_name(name)
+    if not safe.strip("._"):
+        safe = _flatten_name(fallback)
+    if not safe.strip("._"):
+        return "attachment"
+    return safe
+
+
+def _enumerate_attachments(jira_key: str, creds: dict,
+                           mime_prefix: str = "video/") -> tuple[dict, list[dict]]:
+    """Return (issue_meta, attachments whose mimeType starts with mime_prefix).
+
+    Default keeps the video-only behaviour every existing caller relies on;
+    fetch_attachment.py passes "image/", "application/pdf", "" (= all), ...
+    """
     auth = _basic_auth(creds["email"], creds["token"])
     url = f"https://{creds['site']}/rest/api/3/issue/{jira_key}?fields=attachment,summary"
-    req = urllib.request.Request(url,
-        headers={"Authorization": f"Basic {auth}", "Accept": "application/json"})
+    req = _authed_request(url, auth, {"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             issue = json.load(resp)
@@ -229,29 +258,79 @@ def _enumerate_attachments(jira_key: str, creds: dict) -> tuple[dict, list[dict]
         die(ExitCode.TIMEOUT, f"network error reaching Atlassian: {e}")
 
     attachments = issue.get("fields", {}).get("attachment", [])
-    videos = [a for a in attachments if a.get("mimeType", "").startswith("video/")]
-    return issue, videos
+    matched = [a for a in attachments
+               if a.get("mimeType", "").startswith(mime_prefix)]
+    return issue, matched
+
+
+def _authed_request(url: str, auth: str,
+                    headers: dict | None = None) -> urllib.request.Request:
+    """Build a GET carrying Basic auth that a redirect cannot forward.
+
+    urllib follows redirects, and on 3.10 it re-sends headers set the ordinary
+    way to whatever host it lands on. Attachment downloads DO redirect (Jira
+    hands off to its media CDN with a signed URL), so the credential goes on
+    as an unredirected header: hop 0 gets it, later hops do not.
+    """
+    req = urllib.request.Request(url, headers=headers or {})
+    req.add_unredirected_header("Authorization", f"Basic {auth}")
+    return req
+
+
+class AttachmentTooLarge(Exception):
+    """Raised when a download exceeds the caller's max_bytes ceiling.
+
+    Carries the byte count observed so the caller can report it. The partial
+    file is already removed when this is raised.
+    """
+
+    def __init__(self, observed: int, limit: int):
+        super().__init__(f"{observed} bytes exceeds the {limit}-byte limit")
+        self.observed, self.limit = observed, limit
 
 
 def _download_with_ranges(url: str, dest: Path, auth: str,
                           chunk_bytes: int = 4 * 1024 * 1024,
-                          max_retries: int = 5) -> int:
+                          max_retries: int = 5,
+                          max_bytes: int | None = None) -> int:
     """Range-download to dest with retries. Returns total bytes written.
 
     Atlassian's media CDN closes connections early on large files; range requests
     fetch in 4MB chunks so dropped connections only kill one chunk's worth.
 
+    max_bytes (None = unbounded, which is what the video pipeline wants) is
+    enforced against the bytes actually read, not against the advertised
+    Content-Length -- a server that under-reports or omits its length cannot
+    put more than the ceiling on disk. Raises AttachmentTooLarge.
+
     On any failure (network exhaustion, Ctrl-C, etc.) the partial dest file is
     removed before re-raising / dying.
     """
+    def _too_large(observed: int) -> NoReturn:
+        dest.unlink(missing_ok=True)
+        raise AttachmentTooLarge(observed, max_bytes)  # type: ignore[arg-type]
+
     try:
-        head_req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+        head_req = _authed_request(url, auth)
         with urllib.request.urlopen(head_req, timeout=30) as resp:
             total = int(resp.headers.get("Content-Length", "0"))
+            if max_bytes is not None and total > max_bytes:
+                _too_large(total)
             if not total:
-                # Server didn't advertise size: stream whole thing
+                # Server didn't advertise size: stream it, but never past the
+                # ceiling (an unbounded copy would happily write forever).
+                written = 0
                 with open(dest, "wb") as out:
-                    shutil.copyfileobj(resp, out)
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if max_bytes is not None and written > max_bytes:
+                            break
+                        out.write(chunk)
+                if max_bytes is not None and written > max_bytes:
+                    _too_large(written)
                 return dest.stat().st_size
 
         written = 0
@@ -260,13 +339,15 @@ def _download_with_ranges(url: str, dest: Path, auth: str,
                 end = min(written + chunk_bytes - 1, total - 1)
                 for attempt in range(max_retries):
                     try:
-                        req = urllib.request.Request(url, headers={
-                            "Authorization": f"Basic {auth}",
+                        req = _authed_request(url, auth, {
                             "Range": f"bytes={written}-{end}",
                             "Accept-Encoding": "identity",
                         })
                         with urllib.request.urlopen(req, timeout=60) as resp:
                             chunk = resp.read()
+                            if max_bytes is not None and written + len(chunk) > max_bytes:
+                                out.close()
+                                _too_large(written + len(chunk))
                             out.write(chunk)
                             written += len(chunk)
                         if written % (16 * 1024 * 1024) == 0 or written == total:
@@ -335,7 +416,8 @@ def fetch_jira(jira_key: str, workdir: Path, creds_path: Path,
 
     # Download
     workdir.mkdir(parents=True, exist_ok=True)
-    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in attachment["filename"])
+    safe_name = sanitize_filename(attachment["filename"],
+                                  fallback=f"attachment-{attachment['id']}")
     dest = workdir / safe_name
     staging = atomic_path(dest)
 

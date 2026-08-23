@@ -144,8 +144,9 @@ def _extract_final_json(stdout: str) -> str:
     Strategy:
     1. Try parsing the whole stripped stdout (fast path: no noise).
     2. Otherwise locate the last line whose first non-space character is '{'
-       (multi-line JSON always starts a new object at the beginning of a
-       line under print(json.dumps(..., indent=2))). Parse from there to EOF.
+       or '[' (multi-line JSON always starts a new object at the beginning of
+       a line under print(json.dumps(..., indent=2)); fetch_attachment.py
+       returns a top-level array). Parse from there to EOF.
     3. Fall back to walking lines in reverse looking for a complete one-line
        JSON object.
     """
@@ -160,7 +161,7 @@ def _extract_final_json(stdout: str) -> str:
 
     lines = stdout.splitlines()
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i].lstrip().startswith("{"):
+        if lines[i].lstrip()[:1] in ("{", "["):
             candidate = "\n".join(lines[i:]).strip()
             try:
                 json.loads(candidate)
@@ -862,6 +863,70 @@ async def post_to_jira(
              "user authorization) to actually write to Jira."
     )
     return json.dumps(parsed, indent=2)
+
+
+def _confine_outdir(outdir: str | None, jira_key: str) -> str | None:
+    """Keep a caller-supplied destination under DEFAULT_WORKDIR_ROOT.
+
+    The destination arrives from the model, which reads Jira tickets --
+    attacker-controlled text. Sanitized filenames do not help when the
+    DIRECTORY is the attack: 'authorized_keys' and 'config' are ordinary
+    names, and finalize() replaces whatever is already there. So the tool
+    accepts a subdirectory of the tmp root and nothing else; the CLI, driven
+    by a human, keeps the unrestricted --outdir flag.
+    """
+    if outdir is None:
+        return None
+    root = DEFAULT_WORKDIR_ROOT.expanduser().resolve()
+    p = Path(outdir).expanduser().resolve()
+    if p == root or not p.is_relative_to(root):
+        raise ValueError(
+            f"outdir must be a subdirectory of {root} (got {p}). Omit outdir "
+            f"to use the default {root / f'jira-{jira_key}'}.")
+    return str(p)
+
+
+@mcp.tool()
+async def fetch_jira_attachment(
+    jira_key: str,
+    mime_prefix: str = "image/",
+    attachment_id: str | None = None,
+    outdir: str | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Download non-video attachments (images, PDFs, ...) from a Jira issue.
+
+    Nothing is written to Jira, so unlike post_to_jira there is no confirm
+    flag. It DOES write files to the local disk, under <tmp> only.
+    It exists because an agent sandbox typically cannot make the
+    authenticated HTTPS call itself; this server can, and reads the Atlassian
+    token on the agent's behalf. Files land on disk and the agent then opens
+    them with an ordinary file read.
+
+    Args:
+        jira_key: Jira issue key, e.g. PROJ-1234.
+        mime_prefix: mimeType prefix filter. 'image/' (default), 'video/',
+            'application/pdf', or '' to take every attachment.
+        attachment_id: Download exactly this attachment, ignoring mime_prefix.
+        outdir: Destination directory. Must be under the tmp root; anything
+            else is rejected. Default: <tmp>/jira-<KEY>/.
+
+    Returns:
+        JSON array, one object per attachment: {id, filename, mime_type,
+        size_bytes, path}. Anything not downloaded comes back with path=null
+        and skipped set to "too_large" (over ~50 MB), "size_mismatch", or
+        "over_file_limit" (past the first 25 attachments).
+    """
+    outdir = _confine_outdir(outdir, jira_key)
+    args = [jira_key, "--mime-prefix", mime_prefix]
+    if attachment_id:
+        args += ["--attachment-id", attachment_id]
+    if outdir:
+        args += ["--outdir", outdir]
+    rc, stdout, stderr = await _spawn_script("fetch_attachment.py", *args, ctx=ctx)
+    if rc != 0:
+        raise RuntimeError(_format_child_error(rc, stderr, "fetch_attachment.py"))
+    return _extract_final_json(stdout)
 
 
 # ---- Optional: expose the workdir's meta.json as an MCP resource so hosts

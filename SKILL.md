@@ -13,6 +13,7 @@ Give Claude eyes and ears for a video. Output: a directory of timestamped JPEG f
 - **Using `--whisper local` when a hosted key is set.** ~100× slower for no reason. Provider priority below.
 - **Reading every stderr progress line.** Each JSON event line is for observability, not for the agent. Read the final JSON block at the bottom of stdout — that's `meta.json` and tells you exactly which files exist.
 - **Forgetting to relabel after `--whisper deepgram` / `--whisper whisperx`.** Output has anonymous `**S0**` / `**S1**` tags. If the user's prompt referenced specific people ("what did Alice say about…"), call `scripts/relabel_speakers.py` with inferred names before answering — otherwise the answer reads as *"S0 said…"* which is useless.
+- **Reaching for the video pipeline when the user asked about a SCREENSHOT.** Images and PDFs on a ticket come from `scripts/fetch_attachment.py` (MCP: `fetch_jira_attachment`), which downloads them so you can read them as files. `watch_video` only ever sees `video/*`.
 - **Posting to Jira without explicit user consent in THIS turn.** `--post-to-jira` is opt-in only; never pass it unless the user just asked "post this to the ticket" in the current message. Same for `confirm=True` in the MCP `post_to_jira` tool.
 
 ## Decide before invoking
@@ -49,6 +50,7 @@ Parse the user's prompt FIRST, then pick flags. Don't ask clarifying questions �
 | **Local file** | `c:\path\video.mp4` | Used in place — no copy |
 | **Public URL** | `https://youtu.be/...`, Loom, Vimeo, TikTok, X, ~1500 others | `yt-dlp` downloads into workdir |
 | **Jira (full auto)** | `PROJ-1234` or full Jira issue URL — **requires API token configured** (see [Jira token setup](#jira-token-setup) below) | Skill reads token from `credentials.json`, enumerates video attachments via Atlassian REST API, range-downloads the MP4 directly into the workdir. Zero manual steps. |
+| **Jira attachments that are not video** | `PROJ-1234` + a request about screenshots / a PDF | `scripts/fetch_attachment.py PROJ-1234` downloads them to `<tmp>/jira-<KEY>/` and prints the paths; read those files directly. Not the video pipeline. |
 | **Jira (semi-auto fallback)** | Same input, no token configured | Skill enumerates attachments via Atlassian MCP → asks user to click-download → auto-picks the file from `~/Downloads/` |
 | **"I just downloaded it"** | (no path given) | Auto-picks the most recently modified video in `~/Downloads/` from the last 5 minutes |
 
@@ -565,6 +567,29 @@ Default model depends on provider:
 - `openai` → `whisper-1` (only option)
 
 Override with `--model NAME` -- the skill passes it through to the chosen provider unchanged.
+
+## Fetching non-video Jira attachments (images, PDFs)
+
+`scripts/fetch_attachment.py` downloads any attachment, not just the videos the
+pipeline consumes. It exists because an agent sandbox usually cannot make the
+authenticated Atlassian call itself, while this skill already holds the token.
+
+```bash
+# every image on the ticket -> c:/tmp/jira-PROJ-1234/
+python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234
+
+# everything, into a chosen directory
+python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --mime-prefix "" --outdir c:/tmp/proj-1234
+
+# one specific attachment
+python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --attachment-id 1001
+```
+
+Stdout is a JSON array of `{id, filename, mime_type, size_bytes, path}`; open the
+paths with an ordinary file read. Read-only: it never writes to Jira. Files above
+50 MB are refused (single-id mode) or reported with `path: null` and
+`skipped: "too_large"` (bulk mode). Via MCP the same thing is
+`fetch_jira_attachment(jira_key, mime_prefix, attachment_id, outdir)`.
 
 ## Posting `report.md` to Jira (opt-in only)
 

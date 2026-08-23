@@ -235,11 +235,12 @@ Every flag is documented in [docs/configuration.md](docs/configuration.md).
 
 ## Safety model
 
-The skill ships with safety guardrails for the only mutating action it can take — posting to Jira:
+The skill ships with safety guardrails for the one action that leaves the machine — posting to Jira:
 
 - **`--post-to-jira` is opt-in.** Default behavior never writes anything anywhere.
 - **Interactive confirmation prompt.** When `--post-to-jira` is set, the CLI prints the planned comment and asks for `y/N` before sending. The default is `N`.
 - **`--post-to-jira-dry-run`** previews the comment without sending — for sanity-checking the formatting in CI or before a real run.
+- **Local writes are confined.** Pipeline artifacts go to the workdir, and the MCP `fetch_jira_attachment` tool only accepts an `outdir` under the tmp root — a ticket cannot steer downloads at your home directory. Attachment filenames are flattened to a single safe path component before use.
 - **No unsolicited Jira writes from any context.** Skill / plugin / MCP / direct API: all paths require explicit per-invocation consent. The MCP `post_to_jira` tool defaults to `confirm=False` (dry-run); MCP hosts MUST surface the planned action to the user before passing `confirm=True`.
 
 ---

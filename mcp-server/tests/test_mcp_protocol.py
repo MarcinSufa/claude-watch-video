@@ -78,6 +78,7 @@ async def test_protocol_initialize_and_list_tools(tmp_path):
         "read_highlights",
         "pick_highlights",
         "post_to_jira",
+        "fetch_jira_attachment",  # v2.4.0: non-video Jira attachments
     }
     missing = expected_minimum - tool_names
     assert not missing, f"Missing expected tools: {missing}; got {tool_names}"

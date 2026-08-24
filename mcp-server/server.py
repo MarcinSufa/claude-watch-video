@@ -234,6 +234,30 @@ def _write_status(workdir: str, payload: dict) -> None:
     os.replace(staging, p)
 
 
+def _job_is_orphaned(status: dict) -> bool:
+    """True when a persisted "running" job has no one left to finish it.
+
+    The background pipeline task lives inside the server process that wrote
+    the status file. If that pid is not ours, that task is not running here,
+    and the process that owned it is gone (host restart, crash, session end)
+    -- nothing will ever write the terminal state. Observed in the wild: a
+    status file still claiming "running" two days after its server exited,
+    with watch_video_status happily reporting a growing elapsed_seconds.
+
+    Deliberately not a liveness probe on the pid: pids get reused, and
+    os.kill(pid, 0) TERMINATES the target on Windows. "Not this process" is
+    the rule watch_video_start already applied before starting fresh, and
+    this is that rule inverted, unchanged -- including for a missing
+    server_pid. Every running record this binary writes stamps the field, so
+    a record without it came from an older build and cannot be ours. Letting
+    None mean "still running" would have blocked start from recovering
+    exactly the orphaned jobs this exists to recover.
+    """
+    if status.get("state") != "running":
+        return False
+    return status.get("server_pid") != os.getpid()
+
+
 def _read_status(workdir: str) -> dict | None:
     p = _status_path(workdir)
     if not p.is_file():
@@ -535,8 +559,7 @@ async def watch_video_start(
     # the user is stuck polling a job that never completes.
     existing = _read_status(job_id)
     if existing and existing.get("state") == "running":
-        recorded_pid = existing.get("server_pid")
-        if recorded_pid == os.getpid():
+        if not _job_is_orphaned(existing):
             return json.dumps({
                 "job_id": job_id,
                 "state": "running",
@@ -602,7 +625,8 @@ async def watch_video_start(
 async def watch_video_status(job_id: str) -> str:
     """Poll the status of a watch_video job started via watch_video_start.
 
-    Call this every few seconds until the state is 'done' or 'failed'. When
+    Call this every few seconds until the state is 'done', 'failed' or
+    'stale'. All three are terminal for polling purposes. When
     state is 'done', the workdir field tells you where to find the artifacts
     (transcript.md, frames/, report.md/.html/.docx) -- pass it to
     read_transcript / read_report / read_highlights / post_to_jira /
@@ -620,6 +644,10 @@ async def watch_video_status(job_id: str) -> str:
                     "meta": {...full meta.json contents...}}
         - Failed:  {"state": "failed", "completed_at": <ts>, "workdir": "<p>",
                     "error": "..."}
+        - Stale:   {"state": "stale", "owner_pid": <pid>, "artifacts": [...]}
+                   -- the server process that owned this job is gone, so the
+                   file is stuck at "running". Stop polling; call
+                   watch_video_start again to run it fresh.
         - Unknown: {"state": "unknown", "error": "no _mcp_status.json found"}
     """
     status = _read_status(job_id)
@@ -631,6 +659,33 @@ async def watch_video_status(job_id: str) -> str:
                      f"Either the job_id is wrong, or the job was never started "
                      f"via watch_video_start.",
         })
+    if _job_is_orphaned(status):
+        # Don't let the agent poll a job nobody is running. Say what happened
+        # and how to recover, rather than reporting "running" forever.
+        stale = {
+            "state": "stale",
+            "job_id": job_id,
+            "workdir": status.get("workdir", job_id),
+            "started_at": status.get("started_at"),
+            "owner_pid": status.get("server_pid"),
+            "error": (
+                "This job was started by MCP server process "
+                f"{status.get('server_pid')}, which is no longer this process "
+                f"({os.getpid()}). The pipeline task died with it, so the "
+                "status file is stuck at 'running' and will never advance."),
+            "hint": ("Call watch_video_start again for this workdir to run it "
+                     "fresh; it overwrites the stale status. Partial artifacts "
+                     "already in the workdir are listed below."),
+            "artifacts": sorted(
+                p.name for p in Path(job_id).expanduser().glob("*")
+                if not p.name.startswith("_")
+            ) if Path(job_id).expanduser().is_dir() else [],
+        }
+        last_event = _read_last_event(job_id)
+        if last_event is not None:
+            stale["last_event"] = last_event
+        return json.dumps(stale, indent=2)
+
     # Add live elapsed time for running jobs (convenience for the agent).
     if status.get("state") == "running" and "started_at" in status:
         status["elapsed_seconds"] = round(_time.time() - status["started_at"], 1)

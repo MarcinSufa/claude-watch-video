@@ -8,7 +8,7 @@
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20macOS%20%7C%20linux-lightgrey.svg)](#prerequisites-any-path)
 [![Plugin](https://img.shields.io/badge/Claude%20Code-plugin-purple.svg)](https://docs.claude.com/en/docs/claude-code/plugins)
 
-Turn *"watch CON-1234 and tell me what broke"* into a single command. The skill downloads the video, extracts keyframes with ffmpeg, transcribes audio with local or hosted Whisper, deduplicates near-identical frames while preserving narrated moments, optionally OCRs on-screen text, and writes a paste-ready `report.md`. Costs **$0 to a few cents** per video. See [what it costs](#what-it-costs) for the breakdown.
+Turn *"watch PROJ-1234 and tell me what broke"* into a single command. The skill downloads the video, extracts keyframes with ffmpeg, transcribes audio with local or hosted Whisper, deduplicates near-identical frames while preserving narrated moments, optionally OCRs on-screen text, and writes a paste-ready `report.md`. Costs **$0 to a few cents** per video. See [what it costs](#what-it-costs) for the breakdown.
 
 ---
 

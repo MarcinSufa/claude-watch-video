@@ -648,7 +648,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-k
 
 The `highlights` step picks the most relevant moments from the transcript based on a user prompt. Two invocation paths produce the same artifacts (`highlights.json` / `highlights.md` / `highlights.html`):
 
-1. **Inside Claude Code (no API key needed)** — ask Claude conversationally: *"watch CON-1234 then write highlights for the bug-related parts"*. Claude runs the pipeline and reads the transcript / frames in conversation to produce the highlights files directly. This path also gets multimodal vision (Claude can look at the frames), so visual prompts work too.
+1. **Inside Claude Code (no API key needed)** — ask Claude conversationally: *"watch PROJ-1234 then write highlights for the bug-related parts"*. Claude runs the pipeline and reads the transcript / frames in conversation to produce the highlights files directly. This path also gets multimodal vision (Claude can look at the frames), so visual prompts work too.
 2. **Automated (CI / scripted, needs API key)** — `python watch_video.py URL --highlights-prompt "..."` or standalone `python highlights.py <workdir> --prompt "..."`. Calls the Anthropic API via the SDK (default model: Haiku 4.5, ~$0.001-0.005 per video). Same JSON validator + frame-matching logic; produces the same artifact files.
 
 Either way, `post_to_jira.py --style summary` automatically picks up `highlights.json` and uses those moments instead of evenly-distributed picks.

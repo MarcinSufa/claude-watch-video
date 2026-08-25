@@ -183,20 +183,20 @@ HOST (to user): Here are the 5 most relevant moments from the video...
 For a Jira flow:
 
 ```text
-USER: Triage CON-8970 -- watch the attached video and identify the bug.
+USER: Triage PROJ-1234 -- watch the attached video and identify the bug.
 
-HOST → MCP: watch_video(input_ref="CON-8970", dedup=True, ocr=True)
-MCP → HOST: { "workdir": "C:/tmp/watch-con-8970", ... }
+HOST → MCP: watch_video(input_ref="PROJ-1234", dedup=True, ocr=True)
+MCP → HOST: { "workdir": "C:/tmp/watch-proj-1234", ... }
 
 HOST → MCP: pick_highlights(workdir="...", prompt="identify the bug and the moment it occurs")
 MCP → HOST: { "highlights": [...] }
 
 HOST (to user): Here is the bug analysis. Would you like me to post the
-                report back to CON-8970?
+                report back to PROJ-1234?
 USER: Yes, post it.
 
-HOST → MCP: post_to_jira(workdir="C:/tmp/watch-con-8970", confirm=True)
-MCP → HOST: { "issue_key": "CON-8970", "comment_id": "10247", ... }
+HOST → MCP: post_to_jira(workdir="C:/tmp/watch-proj-1234", confirm=True)
+MCP → HOST: { "issue_key": "PROJ-1234", "comment_id": "10247", ... }
 ```
 
 ---

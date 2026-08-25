@@ -277,7 +277,38 @@ def _slugify(text: str, max_len: int = 60) -> str:
     return out[:max_len] or "video"
 
 
-def _default_workdir(input_ref: str) -> str:
+def _failure_payload(rc: int, stdout_text: str, stderr_tail: str) -> dict:
+    """Build the status a failed pipeline leaves behind.
+
+    Exit code 5 (AMBIGUOUS) is the one failure the agent can clear on its
+    own: the pipeline prints the candidate attachments as JSON on STDOUT and
+    stops. Reporting the stderr tail alone hid that list behind a bare "5
+    video attachments on PROJ-1234", so the agent had to go re-enumerate the
+    ticket through another tool. Lift the payload into the status and name
+    the parameter that unblocks it.
+    """
+    payload: dict = {
+        "state": "failed",
+        "completed_at": _time.time(),
+        "error": f"watch_video.py exited with code {rc}. Last stderr "
+                 f"lines:\n{stderr_tail}",
+    }
+    try:
+        parsed = json.loads(_extract_final_json(stdout_text))
+    except json.JSONDecodeError:
+        return payload
+    if isinstance(parsed, dict) and parsed.get("ambiguous"):
+        payload["ambiguous"] = parsed
+        payload["error"] = (
+            f"{len(parsed.get('candidates', []))} video attachments on "
+            f"{parsed.get('issue_key', 'the issue')}; nothing was downloaded. "
+            "Ask which one, then re-run watch_video_start with "
+            "attachment_id=<id> from the ambiguous.candidates list below."
+        )
+    return payload
+
+
+def _default_workdir(input_ref: str, attachment_id: str | None = None) -> str:
     """Pick a default workdir if the caller didn't specify one.
 
     Mirrors scripts/watch_video.py:default_workdir so MCP defaults match the
@@ -288,13 +319,17 @@ def _default_workdir(input_ref: str) -> str:
       That keeps youtube.com/watch?v=ABC distinct from ...v=DEF (otherwise
       both collapse to "watch" and race on the same _mcp_status.json), and
       also keeps generic /download?id=1 distinct from /download?id=2.
-    - Jira-key inputs get a clean lowercased slug.
+    - Jira-key inputs get a clean lowercased slug, plus the attachment id
+      when one was named: two videos on one ticket would otherwise share a
+      workdir, hence a _mcp_status.json, a frames dir and a cache.
     - File-path inputs slug from the basename stem.
     """
     if input_ref == "auto":
         slug = f"watch-{int(_time.time())}"
     elif _JIRA_KEY_RE.match(input_ref):
         slug = f"watch-{input_ref.lower()}"
+        if attachment_id:
+            slug = f"{slug}-{_slugify(attachment_id)}"
     elif "://" in input_ref:
         last_segment = input_ref.rsplit("/", 1)[-1] or "url"
         slug = f"watch-{_slugify(last_segment)}"
@@ -392,17 +427,19 @@ async def _run_pipeline_and_update_status(
                 "stderr_log": str(stderr_log),
             })
         else:
-            # Subprocess exited non-zero. Read stderr tail for diagnostics.
+            # Subprocess exited non-zero. stdout still matters here: an
+            # AMBIGUOUS exit carries its candidate attachments there.
+            try:
+                stdout_text = stdout_log.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                stdout_text = ""
             try:
                 stderr_text = stderr_log.read_text(encoding="utf-8", errors="replace")
             except OSError as e:
                 stderr_text = f"(could not read {stderr_log}: {e})"
             tail = "\n".join(stderr_text.strip().splitlines()[-20:])
             _write_status(workdir, {
-                "state": "failed",
-                "completed_at": _time.time(),
-                "error": f"watch_video.py exited with code {rc}. Last stderr "
-                         f"lines:\n{tail}",
+                **_failure_payload(rc, stdout_text, tail),
                 "workdir": workdir,
                 "stdout_log": str(stdout_log),
                 "stderr_log": str(stderr_log),
@@ -434,6 +471,8 @@ mcp = FastMCP("watch-video")
 async def watch_video(
     input_ref: str,
     workdir: str | None = None,
+    attachment_id: str | None = None,
+    frames: int | None = None,
     dedup: bool = True,
     ocr: bool = False,
     whisper: str = "auto",
@@ -463,8 +502,17 @@ async def watch_video(
             newest video from ~/Downloads.
         workdir: Output directory. If omitted, the pipeline picks a default
             under c:\\tmp\\watch-<slug>\\ (Windows) or equivalent.
+        attachment_id: Jira mode only. Which video to take when the issue
+            carries more than one; without it such a run stops and reports
+            the candidates. Ids come from that report, or from an earlier
+            getJiraIssue call.
+        frames: How many frames to sample across the window. Omit to let
+            the pipeline size the budget from the duration. This is the knob
+            for a silent recording, where dedup does not run.
         dedup: Run smart perceptual-hash dedup with transcript-aware
-            protection. Default true.
+            protection. Default true. Automatically skipped on a run with no
+            transcript (silent or no-audio video), where it would drop the
+            small UI changes a screen recording exists to show.
         ocr: Run Tesseract OCR on kept frames (useful for screen recordings).
             Default false.
         whisper: Transcription source. 'auto' (default) prefers VTT captions
@@ -484,6 +532,10 @@ async def watch_video(
     args = [input_ref]
     if workdir:
         args += ["--workdir", workdir]
+    if attachment_id:
+        args += ["--attachment-id", attachment_id]
+    if frames is not None:
+        args += ["--frames", str(frames)]
     if dedup:
         args.append("--dedup")
     if ocr:
@@ -501,6 +553,13 @@ async def watch_video(
 
     rc, stdout, stderr = await _spawn_script("watch_video.py", *args, ctx=ctx)
     if rc != 0:
+        # stdout still matters here: an AMBIGUOUS exit carries its candidate
+        # attachments there, and this tool used to discard it.
+        tail = "\n".join(stderr.strip().splitlines()[-20:])
+        payload = _failure_payload(rc, stdout, tail)
+        if payload.get("ambiguous"):
+            raise RuntimeError(payload["error"] + "\n"
+                               + json.dumps(payload["ambiguous"], indent=2))
         raise RuntimeError(_format_child_error(rc, stderr, "watch_video.py"))
     return _extract_final_json(stdout)
 
@@ -509,6 +568,8 @@ async def watch_video(
 async def watch_video_start(
     input_ref: str,
     workdir: str | None = None,
+    attachment_id: str | None = None,
+    frames: int | None = None,
     dedup: bool = True,
     ocr: bool = False,
     whisper: str = "auto",
@@ -533,8 +594,15 @@ async def watch_video_start(
         workdir: Output directory. If omitted, defaults to
             'C:\\tmp\\watch-<slug>' on Windows or '/tmp/watch-<slug>' on
             POSIX, where <slug> is derived from input_ref (YouTube video id
-            when present, else last path segment).
-        dedup, ocr, whisper, start, end, no_html, no_docx: same as watch_video.
+            when present, else last path segment, plus attachment_id in Jira
+            mode).
+        attachment_id: Jira mode only. Which video to take when the issue
+            carries more than one. Without it, such a run ends as
+            state='failed' with an 'ambiguous' block listing every candidate
+            (id, filename, size, created, author): ask which one, then start
+            again passing its id. Ids also come from getJiraIssue.
+        frames, dedup, ocr, whisper, start, end, no_html, no_docx: same as
+            watch_video.
 
     Returns:
         JSON string {"job_id": "<workdir-path>", "state": "running",
@@ -544,7 +612,7 @@ async def watch_video_start(
         once the job completes.
     """
     # Resolve workdir (job_id = workdir path).
-    resolved_workdir = workdir or _default_workdir(input_ref)
+    resolved_workdir = workdir or _default_workdir(input_ref, attachment_id)
     job_id = str(Path(resolved_workdir).expanduser().resolve())
 
     # Don't spawn a second pipeline for a workdir that already has one
@@ -573,6 +641,10 @@ async def watch_video_start(
 
     # Build args for the CLI subprocess.
     args = [input_ref, "--workdir", job_id]
+    if attachment_id:
+        args += ["--attachment-id", attachment_id]
+    if frames is not None:
+        args += ["--frames", str(frames)]
     if dedup:
         args.append("--dedup")
     if ocr:
@@ -644,6 +716,10 @@ async def watch_video_status(job_id: str) -> str:
                     "meta": {...full meta.json contents...}}
         - Failed:  {"state": "failed", "completed_at": <ts>, "workdir": "<p>",
                     "error": "..."}
+                   On an ambiguous Jira issue it also carries "ambiguous":
+                   {"issue_key": ..., "candidates": [{"id", "filename",
+                   "size_bytes", "created", "author"}, ...]} -- pick one and
+                   call watch_video_start again with attachment_id.
         - Stale:   {"state": "stale", "owner_pid": <pid>, "artifacts": [...]}
                    -- the server process that owned this job is gone, so the
                    file is stuck at "running". Stop polling; call
@@ -737,8 +813,21 @@ async def read_transcript(workdir: str) -> str:
     Returns:
         The full transcript text (prose paragraphs with MM:SS markers).
     """
-    p = Path(workdir).expanduser() / "transcript.md"
+    wd = Path(workdir).expanduser()
+    p = wd / "transcript.md"
     if not p.is_file():
+        meta_path = wd / "meta.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                meta = {}
+            reason = meta.get("skipped_audio_reason")
+            if reason and meta.get("transcript") is None:
+                raise RuntimeError(
+                    f"no transcript for this run -- transcription was skipped: "
+                    f"{reason}. The frames are the whole evidence here; read "
+                    f"report.md (read_report) instead.")
         raise RuntimeError(f"transcript.md not found at {p}")
     return p.read_text(encoding="utf-8")
 

@@ -30,11 +30,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
-
-
-# Matches the prose-mode paragraph prefix written by transcribe.py: "(_MM:SS_)"
-PARA_TS_RE = re.compile(r"^\(_(\d+):(\d+)_\)\s+(.+)$", re.DOTALL)
+from _common import (ExitCode, atomic_path, die, emit, finalize,  # noqa: E402
+                     parse_para_prefix)
 
 
 def parse_prose_transcript(md_path: Path) -> list[tuple[float, str]]:
@@ -45,10 +42,13 @@ def parse_prose_transcript(md_path: Path) -> list[tuple[float, str]]:
     paragraphs = [p.strip() for p in raw.split("\n\n") if p.strip()]
     out = []
     for p in paragraphs:
-        m = PARA_TS_RE.match(p)
-        if m:
-            mm, ss, text = m.group(1), m.group(2), m.group(3).strip()
-            out.append((int(mm) * 60 + int(ss), text))
+        parsed = parse_para_prefix(p)
+        if parsed:
+            speaker, seconds, prefix_end = parsed
+            text = p[prefix_end:].strip()
+            if speaker:
+                text = f"**{speaker}** {text}"
+            out.append((seconds, text))
     return out
 
 

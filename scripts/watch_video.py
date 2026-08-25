@@ -69,9 +69,12 @@ def slugify(text: str, max_len: int = 60) -> str:
     return out[:max_len] or "video"
 
 
-def default_workdir(kind: str, value: str) -> Path:
+def default_workdir(kind: str, value: str,
+                    attachment_id: str | None = None) -> Path:
     if kind == "jira":
         slug = f"watch-{value.lower()}"
+        if attachment_id:
+            slug = f"{slug}-{slugify(attachment_id)}"
     elif kind == "path":
         slug = f"watch-{slugify(Path(value).stem)}"
     elif kind == "url":
@@ -524,7 +527,7 @@ def main() -> int:
 
     overall_t0 = time.time()
     kind, value = classify_input(args.input)
-    workdir = Path(args.workdir).resolve() if args.workdir else default_workdir(kind, value)
+    workdir = Path(args.workdir).resolve() if args.workdir else default_workdir(kind, value, args.attachment_id)
     workdir.mkdir(parents=True, exist_ok=True)
     _maybe_enable_log_file_mode(workdir)
     meta_path = workdir / "meta.json"
@@ -652,7 +655,7 @@ def main() -> int:
         "frames": args.frames, "resolution": args.resolution,
         "start": args.start, "end": args.end,
         "scene_mode": args.scene_mode, "scene_threshold": args.scene_threshold,
-        "dedup_will_mutate": args.dedup,
+        "dedup_will_mutate": args.dedup and transcription_will_run,
     }
     frames_fp = step_fingerprint("frames", frames_fp_inputs)
     if is_cached(meta, "frames", frames_fp, [frames_dir]):
@@ -738,7 +741,18 @@ def main() -> int:
     # the upstream inputs/flags deterministically, even when the upstream
     # step mutated its own output dir (which dedup does to frames/).
     dedup_step_fp: str | None = None
-    if args.dedup:
+    if args.dedup and meta.get("transcript") is None:
+        # With no transcript the transcript-aware guard is inert and only the
+        # 5-second temporal floor stands. On the PROJ-1234 silent repro that
+        # dropped 22 of 30 frames and made the date field the tester typed
+        # into unreadable: two consecutive frames of a UI repro differ by one
+        # character, so a perceptual hash is supposed to call them duplicates.
+        emit("warning", step="dedup",
+             msg="skipped: no transcript, so dedup would drop the small UI "
+                 "changes this run exists to capture. Bound the frame budget "
+                 "with --frames N (MCP: frames=N) instead.",
+             reason=meta.get("skipped_audio_reason") or "no transcript")
+    elif args.dedup:
         dedup_fp_inputs = {
             "frames_step_fp": frames_fp,
             "transcribe_step_fp": transcribe_step_fp,

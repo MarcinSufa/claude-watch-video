@@ -32,7 +32,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
+from _common import (ExitCode, PARA_TS_RE, atomic_path, die, emit,  # noqa: E402
+                     finalize)
 
 
 DEFAULT_PROVIDER = "anthropic"
@@ -78,9 +79,6 @@ DEFAULT_PROMPT = (
     "reviewer would actually need to see to understand what this video shows."
 )
 DEFAULT_CREDS_PATH = Path.home() / ".watch-video" / "credentials.json"
-
-# Matches "(_MM:SS_)" prefix used in transcript.md prose paragraphs.
-PARA_TS_RE = re.compile(r"^\(_(\d+):(\d+)_\)\s+", re.MULTILINE)
 
 PROMPT_TEMPLATE = """You are analyzing a narrated video transcript to pick the most relevant moments.
 
@@ -138,7 +136,7 @@ def _extract_available_timestamps(transcript_text: str) -> set[str]:
     """Returns the set of MM:SS strings that appear as paragraph markers."""
     found: set[str] = set()
     for m in PARA_TS_RE.finditer(transcript_text):
-        mm, ss = int(m.group(1)), int(m.group(2))
+        mm, ss = int(m.group(2)), int(m.group(3))
         found.add(f"{mm:02d}:{ss:02d}")
         # Also accept M:SS without leading zero
         found.add(f"{mm}:{ss:02d}")

@@ -24,17 +24,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
-
-
-# Matches prose-mode paragraph prefix written by transcribe.py: "(_MM:SS_)"
-PARA_TS_RE = re.compile(r"^\(_(\d+):(\d+)_\)", re.MULTILINE)
+from _common import (ExitCode, PARA_TS_RE, atomic_path, die, emit,  # noqa: E402
+                     finalize)
 
 
 def load_meta(workdir: Path) -> dict:
@@ -59,7 +55,7 @@ def protected_times_from_transcript(workdir: Path) -> list[float]:
     text = md.read_text(encoding="utf-8")
     times = []
     for m in PARA_TS_RE.finditer(text):
-        mm, ss = int(m.group(1)), int(m.group(2))
+        mm, ss = int(m.group(2)), int(m.group(3))
         times.append(float(mm * 60 + ss))
     return times
 
@@ -85,6 +81,16 @@ def dedup(workdir: Path, threshold: int, min_interval: float,
         return meta
 
     protected = protected_times_from_transcript(workdir)
+    if not protected:
+        # Without paragraph timestamps only the temporal floor stands, and on a
+        # UI repro that drops the frames that differ by one character (PROJ-1234:
+        # 30 -> 8). Reached both from a silent track and from a transcript that
+        # parsed to zero paragraphs, which is_silent does not catch.
+        emit("warning", step="dedup",
+             msg="skipped: no transcript paragraphs to protect frames with. "
+                 "Bound the frame budget with --frames N instead.",
+             before=len(frames))
+        return meta
 
     emit("start", step="dedup",
          before=len(frames), threshold=threshold,

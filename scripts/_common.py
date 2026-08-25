@@ -10,11 +10,40 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any, NoReturn
+
+
+# ---- transcript.md paragraph prefix ---------------------------------------
+
+# Prose paragraphs written by transcribe.py start with "(_MM:SS_)", or with a
+# bold speaker label first ("**S0** (_MM:SS_)") when the provider diarized --
+# and relabel_speakers.py rewrites S0 to a name, so the label is arbitrary.
+# Groups: 1 = speaker or None, 2 = minutes, 3 = seconds.
+#
+# Lived in three copies (dedup, highlights, report), all matching only the
+# untagged shape, so every Deepgram run lost frame protection, timeline rows
+# and highlight timestamps at once. One definition now; keep it that way.
+#
+# The ^ anchor is load-bearing: transcript.txt carries inline "[MM:SS] S0:"
+# tags that must never read as paragraph starts.
+PARA_TS_RE = re.compile(
+    r"^(?:\*\*([^*\n]+)\*\*[ \t]+)?\(_(\d+):(\d+)_\)", re.MULTILINE)
+
+
+def parse_para_prefix(text: str) -> tuple[str | None, float, int] | None:
+    """Match a paragraph prefix at the start of `text`.
+
+    Returns (speaker, start_seconds, prefix_end_offset), or None.
+    """
+    m = PARA_TS_RE.match(text)
+    if not m:
+        return None
+    return m.group(1), float(int(m.group(2)) * 60 + int(m.group(3))), m.end()
 
 
 # ---- Exit codes -----------------------------------------------------------

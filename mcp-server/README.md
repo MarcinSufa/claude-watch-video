@@ -33,7 +33,7 @@ For CI, batch processing, or when you want streaming progress, the **CLI is stil
 
 | Tool | What it does | When to use |
 |---|---|---|
-| **`watch_video_start(input_ref, ...)`** | Start the pipeline as a background job. Returns `{job_id, state: "running", ...}` instantly. | The primary entry point. |
+| **`watch_video_start(input_ref, ...)`** | Start the pipeline as a background job. Returns `{job_id, state: "running", ...}` instantly. Takes `attachment_id=<id>` to name one video on a Jira issue holding several; without it such a run fails with an `ambiguous` block listing the candidates. Takes `frames=<n>` to set the frame budget, which is the knob to reach for when a silent recording skips dedup. | The primary entry point. |
 | **`watch_video_status(job_id)`** | Poll job state. Returns `running` (with `last_event` + `elapsed_seconds`), `done` (with `meta` JSON), `failed` (with `error` text), or `stale` — the server process that owned the job is gone, so the status file can never advance. | Call every few seconds after `watch_video_start`. `running`, and only `running`, means keep polling. |
 | `watch_video(input_ref, ...)` ⚠️ deprecated | Synchronous one-shot pipeline call. | Avoid on Claude Desktop / Windows. Kept for back-compat. Use the start/status pair instead. |
 | `read_transcript(workdir)` | Returns `transcript.md` content. When the pipeline ran with `--whisper deepgram`, each paragraph is prefixed with a speaker tag (`**S0** (_00:15_) ...`). | When you want just the narration. |
@@ -89,7 +89,7 @@ Optional, unlocks features:
 | Optional | Unlocks |
 |---|---|
 | `yt-dlp` | URL input mode |
-| `Pillow` + `imagehash` | smart dedup |
+| `Pillow` + `imagehash` | smart dedup (silent videos skip dedup: no transcript means no frame protection, see SKILL.md) |
 | `pytesseract` + Tesseract binary | OCR on frames |
 | `anthropic` / `openai` Python SDK | LLM highlights |
 | `python-docx` | `report.docx` (gracefully skipped if missing) |

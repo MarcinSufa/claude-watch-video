@@ -124,6 +124,10 @@ def _run_step_via_log_files(name: str, cmd: list[str]) -> dict:
 
     with open(log_out, "wb", buffering=0) as out_f, \
          open(log_err, "wb", buffering=0) as err_f:
+        # Emitted to OUR OWN stderr (the orchestrator's, not the step's log
+        # file) right before Popen, so a slow spawn under an MCP host shows
+        # up distinctly from slow work inside the child once it's running.
+        emit("spawn", step=name)
         proc = subprocess.Popen(cmd, stdout=out_f, stderr=err_f)
         rc = proc.wait()
 

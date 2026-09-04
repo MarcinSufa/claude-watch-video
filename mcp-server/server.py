@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -71,59 +72,62 @@ async def _spawn_script(
     """Spawn scripts/<script> with the given args. Argv-list invocation, no
     shell interpretation (injection-safe). Returns (rc, stdout, stderr).
 
-    Reads stdout and stderr concurrently via asyncio.gather. communicate()
-    buffers both pipes until the child exits, which deadlocks on Windows when
-    either pipe fills (default buffer size is small, and the pipeline emits
-    one JSON event per step on stderr). Concurrent draining keeps both pipes
-    free at the SUBPROCESS layer.
+    Child stdio goes to LOG FILES, never PIPE, for the reason spelled out on
+    _run_pipeline_and_update_status: under an MCP host the server's event
+    loop is starved while a tool call is in flight, the asyncio pump tasks
+    get almost no CPU, the kernel pipe fills, and the child blocks on its
+    first write. Measured on Windows fetching a 65 KB Jira attachment:
+    the piped version never returned in 1800 s (twice), and the child sat at
+    0.02 s of CPU the whole time, while the same script from a shell finished
+    in 2.0 s. A file has no buffer ceiling, so the child never blocks
+    regardless of what the loop is doing.
 
-    ``ctx`` is accepted as a parameter for forward compatibility but is no
-    longer used for per-event progress notifications -- doing that introduced
-    a *second* pipe-buffer deadlock at the SERVER-TO-HOST layer (Claude
-    Desktop doesn't drain the MCP server's stdout while a tool call is in
-    flight; await ctx.info(...) blocks waiting for buffer space, the pump
-    task hangs, gather() never resolves, the tool call never returns). The
-    proper fix is the v2.1.0 polling pattern; see ROADMAP.md.
+    stdin is /dev/null: the child inherits the server's stdin otherwise,
+    which is the host's JSON-RPC pipe, and a child that reads it steals the
+    host's bytes.
+
+    ``ctx`` is accepted for forward compatibility but unused: live
+    notifications (ctx.info / ctx.report_progress) deadlock the call at the
+    SERVER-TO-HOST layer. Progress belongs on the polling pattern instead
+    (watch_video_start + watch_video_status).
     """
     argv = [sys.executable, str(SCRIPTS_DIR / script), *args]
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    proc = None
+    with tempfile.TemporaryDirectory(prefix="watch-video-mcp-") as tmp:
+        stdout_path = Path(tmp) / "stdout.log"
+        stderr_path = Path(tmp) / "stderr.log"
+        try:
+            with open(stdout_path, "wb", buffering=0) as out_f, open(
+                    stderr_path, "wb", buffering=0) as err_f:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=out_f,
+                    stderr=err_f,
+                )
+                rc = await proc.wait()
+        except asyncio.CancelledError:
+            # Without this the child outlives the cancelled call and keeps
+            # writing into a temp dir nobody reads (observed: a fetch child
+            # still running hours after its tool call was aborted). Killed
+            # without awaiting: an await inside a cancelled task is not
+            # guaranteed to resume, which would hang the cancellation itself.
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+            raise
+        return (
+            rc if rc is not None else -1,
+            _read_log(stdout_path),
+            _read_log(stderr_path),
+        )
 
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
 
-    # NOTE: live MCP notifications (ctx.report_progress / ctx.info) were tried
-    # but deadlocked the call. The host doesn't drain the MCP server's stdout
-    # while awaiting a tool result -- the OS pipe buffer fills after ~10-30
-    # notifications, then `await ctx.info(...)` blocks forever waiting for
-    # buffer space, which blocks the stderr pump, which blocks the child's
-    # stderr writes, which hangs the entire pipeline.
-    #
-    # The pump itself is still required: without concurrent stdout+stderr
-    # draining the child deadlocks the same way at the OS-pipe layer (this
-    # is the original v2.0.0 communicate() bug). We drain silently here and
-    # return the full log in stderr so the caller can inspect it after.
-    async def _pump(stream, sink: list[str]) -> None:
-        """Drain a stream line-by-line into sink. Silent; no host notifications."""
-        if stream is None:
-            return
-        async for raw in stream:
-            sink.append(raw.decode("utf-8", errors="replace"))
-
-    await asyncio.gather(
-        _pump(proc.stdout, stdout_chunks),
-        _pump(proc.stderr, stderr_chunks),
-        proc.wait(),
-    )
-
-    return (
-        proc.returncode if proc.returncode is not None else -1,
-        "".join(stdout_chunks),
-        "".join(stderr_chunks),
-    )
+def _read_log(path: Path) -> str:
+    """Read a child's log file back, tolerating a child that wrote nothing."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
 
 
 def _format_child_error(rc: int, stderr: str, script: str) -> str:

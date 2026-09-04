@@ -92,29 +92,40 @@ async def _spawn_script(
     (watch_video_start + watch_video_status).
     """
     argv = [sys.executable, str(SCRIPTS_DIR / script), *args]
-    proc = None
-    with tempfile.TemporaryDirectory(prefix="watch-video-mcp-") as tmp:
+    # ignore_cleanup_errors: a killed child can still hold its log files for
+    # a moment, and rmtree then raises WinError 32. On 3.10/3.11 an exception
+    # from __exit__ REPLACES the CancelledError, so the host would see a
+    # PermissionError instead of the cancellation it asked for.
+    with tempfile.TemporaryDirectory(
+            prefix="watch-video-mcp-", ignore_cleanup_errors=True) as tmp:
         stdout_path = Path(tmp) / "stdout.log"
         stderr_path = Path(tmp) / "stderr.log"
-        try:
-            with open(stdout_path, "wb", buffering=0) as out_f, open(
-                    stderr_path, "wb", buffering=0) as err_f:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=out_f,
-                    stderr=err_f,
-                )
+        with open(stdout_path, "wb", buffering=0) as out_f, open(
+                stderr_path, "wb", buffering=0) as err_f:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=out_f,
+                stderr=err_f,
+            )
+            try:
                 rc = await proc.wait()
-        except asyncio.CancelledError:
-            # Without this the child outlives the cancelled call and keeps
-            # writing into a temp dir nobody reads (observed: a fetch child
-            # still running hours after its tool call was aborted). Killed
-            # without awaiting: an await inside a cancelled task is not
-            # guaranteed to resume, which would hang the cancellation itself.
-            if proc is not None and proc.returncode is None:
-                proc.kill()
-            raise
+            except asyncio.CancelledError:
+                # Killed INSIDE the open block, before the handles close, so
+                # the child is already signalled when rmtree runs. Without
+                # the kill the child outlives the cancelled call and writes
+                # into a temp dir nobody reads (observed: a fetch child still
+                # running hours after its tool call was aborted).
+                #
+                # Not awaited: an await inside a cancelled task is not
+                # guaranteed to resume, and waiting here hung the
+                # cancellation itself in the first version of this code. The
+                # cost is that the exit status is never reaped here, and a
+                # kill only signals the direct child, not its grandchildren
+                # (ffmpeg, tesseract) -- see ROADMAP.
+                if proc.returncode is None:
+                    proc.kill()
+                raise
         return (
             rc if rc is not None else -1,
             _read_log(stdout_path),
@@ -398,6 +409,25 @@ def _reset_run_logs(workdir_path: Path) -> None:
             pass
 
 
+def _prepare_run_logs(workdir: str) -> None:
+    """Clear every log a status poll can read, BEFORE the job is published.
+
+    _reset_run_logs alone runs inside the background task, i.e. after
+    watch_video_start has already written state=running and returned. A poll
+    landing in that window reads the PREVIOUS run's newest event and reports
+    a step that is not running -- exactly the lie the reset exists to stop.
+    Sequential stdio hides it; parallel tool dispatch does not.
+    """
+    workdir_path = Path(workdir).expanduser()
+    workdir_path.mkdir(parents=True, exist_ok=True)
+    _reset_run_logs(workdir_path)
+    for name in ("_mcp_stdout.log", "_mcp_stderr.log"):
+        try:
+            (workdir_path / name).write_bytes(b"")
+        except OSError:
+            pass
+
+
 def _existing_running_job(job_id: str) -> dict | None:
     """Return the status payload of a non-orphaned "running" job at job_id,
     or None if there isn't one.
@@ -478,6 +508,10 @@ async def _run_pipeline_and_update_status(
         child_env = {**os.environ, "WATCH_VIDEO_NO_PIPE": "1"}
         proc = await asyncio.create_subprocess_exec(
             *argv,
+            # Same hole _spawn_script closes: without this the orchestrator
+            # and every grandchild (ffmpeg reads stdin by default) inherit
+            # the host's JSON-RPC pipe and can eat the host's bytes.
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=out_f,
             stderr=err_f,
             env=child_env,
@@ -662,6 +696,7 @@ async def watch_video(
         args = _build_pipeline_args(
             input_ref, job_id, attachment_id, frames, dedup, ocr, whisper,
             start, end, no_html, no_docx)
+        _prepare_run_logs(job_id)
         _write_status(job_id, {
             "state": "running",
             "started_at": _time.time(),
@@ -764,6 +799,7 @@ async def watch_video_start(
     # later watch_video_start detect stale-running state from a previous
     # server instance (see the duplicate-guard above).
     started_at = _time.time()
+    _prepare_run_logs(job_id)
     _write_status(job_id, {
         "state": "running",
         "started_at": started_at,

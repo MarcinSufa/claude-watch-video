@@ -128,7 +128,8 @@ def _run_step_via_log_files(name: str, cmd: list[str]) -> dict:
         # file) right before Popen, so a slow spawn under an MCP host shows
         # up distinctly from slow work inside the child once it's running.
         emit("spawn", step=name)
-        proc = subprocess.Popen(cmd, stdout=out_f, stderr=err_f)
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f)
         rc = proc.wait()
 
     stdout_data = log_out.read_text(encoding="utf-8", errors="replace")

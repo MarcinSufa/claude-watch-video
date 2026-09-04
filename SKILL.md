@@ -26,7 +26,7 @@ Parse the user's prompt FIRST, then pick flags. Don't ask clarifying questions �
 | Specific question ("why X", "what's the bug", "when does Y happen") | `--highlights-prompt "<their literal question>"` |
 | Video > 10 minutes AND specific question | **Mandatory** `--highlights-prompt` (token economy) |
 | Multi-speaker (podcast / interview / meeting recording) | `--whisper deepgram` (hosted, ~$0.0043/min) OR `--whisper whisperx` (local + offline, free, needs HF token) |
-| Screen recording with on-screen text (UI bug repro, form fields, error toasts) | `--ocr` |
+| Screen recording with on-screen text (UI bug repro, form fields, error toasts) | No flag by default — read `<workdir>/frames/*.jpg` directly with the host's image tool. Add `--ocr` only when the on-screen text needs to be grepped across many frames; it costs 1.7-2.3 s per frame plus a cold start that can reach a minute under an MCP host on Windows. |
 | Bug repro + user just asked to post analysis back | `--highlights-prompt "what is the bug" --post-to-jira` |
 | Polish / non-English / mixed content | `--lang pl` (or appropriate ISO) — auto-detect is unreliable on short clips |
 
@@ -306,7 +306,7 @@ python ~/.claude/skills/watch-video/scripts/watch_video.py <input> [flags]
 
 ### Path B — When invoked through the MCP server (Claude Desktop, Cursor, Cline, etc.)
 
-If the host has the watch-video MCP server registered (tools prefixed `mcp__watch-video__*`), use the **polling pattern** — NOT the legacy blocking `watch_video` tool, which hangs on Claude Desktop due to a stdio JSON-RPC buffer interaction.
+If the host has the watch-video MCP server registered (tools prefixed `mcp__watch-video__*`), use the **polling pattern** — NOT the blocking `watch_video` tool, which ties up the whole tool call for the pipeline's full duration (minutes with `--ocr` or local Whisper) on hosts that penalize long-running calls, such as Claude Desktop on Windows.
 
 The pattern is two tools used together:
 
@@ -318,6 +318,10 @@ The pattern is two tools used together:
    → wait ~3 seconds between polls
    → break when "state" is "done", "failed", or "unknown"
    → typical completion: 5-30 seconds for short YouTube clips with captions
+   → frames land in <workdir>/frames/ within ~10 s of start; for a silent
+     screen recording, read them with the host's image-read tool as soon as
+     watch_video_status shows the "frames" step complete, instead of
+     waiting for OCR or the report
 
 3. When state is "done":
    - status["meta"] contains the full meta.json (workdir, transcript info, frame counts)
@@ -330,11 +334,11 @@ The pattern is two tools used together:
 
 **Jira issues carrying more than one video:** pass `attachment_id=<id>` to `watch_video_start` (or `watch_video`, which reports the same candidates in its error). Without it the job ends as `state: "failed"` with an `ambiguous` block listing every candidate — `id`, `filename`, `size_bytes`, `created`, `author` — and nothing is downloaded. Show that list, ask which video, then start again with its id. Each id gets its own workdir, so two videos from one ticket never share artifacts.
 
-**Polling cadence:** start with 1-second intervals for the first few seconds (captions-eligible content often completes in <5s), then back off to 3-5 second intervals. Most short clips complete in <10 seconds total; longer videos with local Whisper can take 30-120 seconds. If state stays "running" past 5 minutes, something is genuinely wrong — surface this to the user.
+**Polling cadence:** start with 1-second intervals for the first few seconds (captions-eligible content often completes in <5s), then back off to 3-5 second intervals. Most short clips complete in <10 seconds total; longer videos with local Whisper can take 30-120 seconds. A running state for 2-3 minutes on a short clip with `--ocr` is normal on Windows (cold-start cost); past that, something is genuinely wrong — surface this to the user.
 
-**Why two tools instead of one blocking call:** the legacy `watch_video` MCP tool blocks the host on a single multi-second tool call, which fights stdio JSON-RPC buffer drain on Claude Desktop and similar hosts. The polling pattern means every tool call returns in <100ms, so no buffer pressure. Each `watch_video_status` poll also gives the user a chance to see the work is alive (via the host's tool-call UI).
+**Why two tools instead of one blocking call:** the `watch_video` MCP tool blocks the host for a single tool call that can run minutes, which some hosts (Claude Desktop on Windows among them) penalize. The polling pattern means every tool call returns in <100ms. Each `watch_video_status` poll also gives the user a chance to see the work is alive (via the host's tool-call UI).
 
-**Backwards compat:** the original blocking `watch_video` tool is still registered but documented as deprecated. Prefer `watch_video_start` + `watch_video_status` on any host where the blocking call has shown issues.
+**Backwards compat:** the blocking `watch_video` tool is still registered and runs through the same no-pipe pipeline runner as `watch_video_start`, so its subprocess output is no longer piped -- no 10-75 s per-step drain latency, no orchestrator-side deadlock. It still holds the calling tool call open for the whole pipeline though, and a host that penalizes long-running tool calls can still stall on that; prefer `watch_video_start` + `watch_video_status` there.
 
 1. **Run the orchestrator.** Pass `<input>` and any of these optional flags:
    - `--workdir <PATH>` — override default `c:\tmp\watch-<slug>\`

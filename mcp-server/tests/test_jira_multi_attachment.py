@@ -105,22 +105,31 @@ def test_mcp_and_cli_agree_on_the_default_workdir(attachment_id):
 
 
 @pytest.mark.asyncio
-async def test_the_blocking_tool_also_reports_the_candidates(monkeypatch):
-    """watch_video (deprecated, but SKILL.md still points agents at it) raised
-    the stderr tail and dropped stdout, where the candidate list lives."""
+async def test_the_blocking_tool_also_reports_the_candidates(tmp_path, monkeypatch):
+    """watch_video raised the stderr tail and dropped stdout, where the
+    candidate list lives -- it must still surface it now it runs through
+    the log-file runner instead of _spawn_script."""
     candidates = {
-        "ambiguous": True, "issue_key": "PROJ-1234",
+        "issue_key": "PROJ-1234",
         "candidates": [{"id": "1001", "filename": "repro.mp4"},
                        {"id": "1002", "filename": "other.mp4"}],
     }
 
-    async def fake_spawn(script, *args, ctx=None):
-        return 5, json.dumps(candidates, indent=2), "5 video attachments on PROJ-1234"
+    async def fake_pipeline(job_id, args):
+        server._write_status(job_id, {
+            "state": "failed",
+            "completed_at": 2.0,
+            "error": "5 video attachments on PROJ-1234; nothing was downloaded. "
+                     "Ask which one, then re-run watch_video_start with "
+                     "attachment_id=<id> from the ambiguous.candidates list below.",
+            "ambiguous": candidates,
+            "workdir": job_id,
+        })
 
-    monkeypatch.setattr(server, "_spawn_script", fake_spawn)
+    monkeypatch.setattr(server, "_run_pipeline_and_update_status", fake_pipeline)
 
     with pytest.raises(RuntimeError) as e:
-        await server.watch_video("PROJ-1234")
+        await server.watch_video("PROJ-1234", workdir=str(tmp_path / "wd"))
 
     assert "attachment_id" in str(e.value)
     assert "1001" in str(e.value)

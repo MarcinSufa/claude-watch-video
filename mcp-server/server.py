@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -71,59 +72,73 @@ async def _spawn_script(
     """Spawn scripts/<script> with the given args. Argv-list invocation, no
     shell interpretation (injection-safe). Returns (rc, stdout, stderr).
 
-    Reads stdout and stderr concurrently via asyncio.gather. communicate()
-    buffers both pipes until the child exits, which deadlocks on Windows when
-    either pipe fills (default buffer size is small, and the pipeline emits
-    one JSON event per step on stderr). Concurrent draining keeps both pipes
-    free at the SUBPROCESS layer.
+    Child stdio goes to LOG FILES, never PIPE, for the reason spelled out on
+    _run_pipeline_and_update_status: under an MCP host the server's event
+    loop is starved while a tool call is in flight, the asyncio pump tasks
+    get almost no CPU, the kernel pipe fills, and the child blocks on its
+    first write. Measured on Windows fetching a 65 KB Jira attachment:
+    the piped version never returned in 1800 s (twice), and the child sat at
+    0.02 s of CPU the whole time, while the same script from a shell finished
+    in 2.0 s. A file has no buffer ceiling, so the child never blocks
+    regardless of what the loop is doing.
 
-    ``ctx`` is accepted as a parameter for forward compatibility but is no
-    longer used for per-event progress notifications -- doing that introduced
-    a *second* pipe-buffer deadlock at the SERVER-TO-HOST layer (Claude
-    Desktop doesn't drain the MCP server's stdout while a tool call is in
-    flight; await ctx.info(...) blocks waiting for buffer space, the pump
-    task hangs, gather() never resolves, the tool call never returns). The
-    proper fix is the v2.1.0 polling pattern; see ROADMAP.md.
+    stdin is /dev/null: the child inherits the server's stdin otherwise,
+    which is the host's JSON-RPC pipe, and a child that reads it steals the
+    host's bytes.
+
+    ``ctx`` is accepted for forward compatibility but unused: live
+    notifications (ctx.info / ctx.report_progress) deadlock the call at the
+    SERVER-TO-HOST layer. Progress belongs on the polling pattern instead
+    (watch_video_start + watch_video_status).
     """
     argv = [sys.executable, str(SCRIPTS_DIR / script), *args]
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    # ignore_cleanup_errors: a killed child can still hold its log files for
+    # a moment, and rmtree then raises WinError 32. On 3.10/3.11 an exception
+    # from __exit__ REPLACES the CancelledError, so the host would see a
+    # PermissionError instead of the cancellation it asked for.
+    with tempfile.TemporaryDirectory(
+            prefix="watch-video-mcp-", ignore_cleanup_errors=True) as tmp:
+        stdout_path = Path(tmp) / "stdout.log"
+        stderr_path = Path(tmp) / "stderr.log"
+        with open(stdout_path, "wb", buffering=0) as out_f, open(
+                stderr_path, "wb", buffering=0) as err_f:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=out_f,
+                stderr=err_f,
+            )
+            try:
+                rc = await proc.wait()
+            except asyncio.CancelledError:
+                # Killed INSIDE the open block, before the handles close, so
+                # the child is already signalled when rmtree runs. Without
+                # the kill the child outlives the cancelled call and writes
+                # into a temp dir nobody reads (observed: a fetch child still
+                # running hours after its tool call was aborted).
+                #
+                # Not awaited: an await inside a cancelled task is not
+                # guaranteed to resume, and waiting here hung the
+                # cancellation itself in the first version of this code. The
+                # cost is that the exit status is never reaped here, and a
+                # kill only signals the direct child, not its grandchildren
+                # (ffmpeg, tesseract) -- see ROADMAP.
+                if proc.returncode is None:
+                    proc.kill()
+                raise
+        return (
+            rc if rc is not None else -1,
+            _read_log(stdout_path),
+            _read_log(stderr_path),
+        )
 
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
 
-    # NOTE: live MCP notifications (ctx.report_progress / ctx.info) were tried
-    # but deadlocked the call. The host doesn't drain the MCP server's stdout
-    # while awaiting a tool result -- the OS pipe buffer fills after ~10-30
-    # notifications, then `await ctx.info(...)` blocks forever waiting for
-    # buffer space, which blocks the stderr pump, which blocks the child's
-    # stderr writes, which hangs the entire pipeline.
-    #
-    # The pump itself is still required: without concurrent stdout+stderr
-    # draining the child deadlocks the same way at the OS-pipe layer (this
-    # is the original v2.0.0 communicate() bug). We drain silently here and
-    # return the full log in stderr so the caller can inspect it after.
-    async def _pump(stream, sink: list[str]) -> None:
-        """Drain a stream line-by-line into sink. Silent; no host notifications."""
-        if stream is None:
-            return
-        async for raw in stream:
-            sink.append(raw.decode("utf-8", errors="replace"))
-
-    await asyncio.gather(
-        _pump(proc.stdout, stdout_chunks),
-        _pump(proc.stderr, stderr_chunks),
-        proc.wait(),
-    )
-
-    return (
-        proc.returncode if proc.returncode is not None else -1,
-        "".join(stdout_chunks),
-        "".join(stderr_chunks),
-    )
+def _read_log(path: Path) -> str:
+    """Read a child's log file back, tolerating a child that wrote nothing."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
 
 
 def _format_child_error(rc: int, stderr: str, script: str) -> str:
@@ -338,6 +353,99 @@ def _default_workdir(input_ref: str, attachment_id: str | None = None) -> str:
     return str(DEFAULT_WORKDIR_ROOT / slug)
 
 
+def _build_pipeline_args(
+    input_ref: str,
+    workdir: str,
+    attachment_id: str | None,
+    frames: int | None,
+    dedup: bool,
+    ocr: bool,
+    whisper: str,
+    start: str | None,
+    end: str | None,
+    no_html: bool,
+    no_docx: bool,
+) -> list[str]:
+    """Build watch_video.py's argv tail. Shared by watch_video and
+    watch_video_start so the two tools can't drift on flag handling."""
+    args = [input_ref, "--workdir", workdir]
+    if attachment_id:
+        args += ["--attachment-id", attachment_id]
+    if frames is not None:
+        args += ["--frames", str(frames)]
+    if dedup:
+        args.append("--dedup")
+    if ocr:
+        args.append("--ocr")
+    if whisper and whisper != "auto":
+        args += ["--whisper", whisper]
+    if start:
+        args += ["--start", start]
+    if end:
+        args += ["--end", end]
+    if no_html:
+        args.append("--no-html")
+    if no_docx:
+        args.append("--no-docx")
+    return args
+
+
+def _reset_run_logs(workdir_path: Path) -> None:
+    """Delete every file under <workdir>/_step_logs/ left by a previous run.
+
+    A step that cache-hits this run never opens its log file, so a stale
+    <step>.stderr.log from an earlier run stays on disk with an old "ts".
+    Without clearing it, a status poll right after start -- before the new
+    orchestrator has emitted anything of its own -- can pick that stale file
+    as the newest event and report a step that isn't actually running.
+    """
+    step_logs_dir = workdir_path / "_step_logs"
+    if not step_logs_dir.is_dir():
+        return
+    for f in step_logs_dir.glob("*"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+
+def _prepare_run_logs(workdir: str) -> None:
+    """Clear every log a status poll can read, BEFORE the job is published.
+
+    _reset_run_logs alone runs inside the background task, i.e. after
+    watch_video_start has already written state=running and returned. A poll
+    landing in that window reads the PREVIOUS run's newest event and reports
+    a step that is not running -- exactly the lie the reset exists to stop.
+    Sequential stdio hides it; parallel tool dispatch does not.
+    """
+    workdir_path = Path(workdir).expanduser()
+    workdir_path.mkdir(parents=True, exist_ok=True)
+    _reset_run_logs(workdir_path)
+    for name in ("_mcp_stdout.log", "_mcp_stderr.log"):
+        try:
+            (workdir_path / name).write_bytes(b"")
+        except OSError:
+            pass
+
+
+def _existing_running_job(job_id: str) -> dict | None:
+    """Return the status payload of a non-orphaned "running" job at job_id,
+    or None if there isn't one.
+
+    Shared by watch_video and watch_video_start so a caller of either tool
+    can't spawn a second pipeline over one already running in THIS server
+    process for the same workdir -- both tasks would write the same
+    artifacts, logs, cache, and _mcp_status.json, racing each other. A
+    "running" record left by a since-exited server process doesn't count
+    (see _job_is_orphaned): that pipeline task died with its process, so
+    nothing will ever advance it, and a fresh run is what's needed.
+    """
+    existing = _read_status(job_id)
+    if existing and existing.get("state") == "running" and not _job_is_orphaned(existing):
+        return existing
+    return None
+
+
 async def _run_pipeline_and_update_status(
     workdir: str,
     args: list[str],
@@ -361,16 +469,23 @@ async def _run_pipeline_and_update_status(
     event loop is doing. This is the structural fix the v2.0.x patches
     needed but never delivered.
     """
-    workdir_path = Path(workdir).expanduser()
-    workdir_path.mkdir(parents=True, exist_ok=True)
-    stdout_log = workdir_path / "_mcp_stdout.log"
-    stderr_log = workdir_path / "_mcp_stderr.log"
-
     argv = [sys.executable, str(SCRIPTS_DIR / "watch_video.py"), *args]
     proc = None
     out_f = None
     err_f = None
     try:
+        # mkdir/_reset_run_logs are inside the try too: a cancellation that
+        # lands before either runs would otherwise skip both the except
+        # branch below and the finally's (harmless, since out_f/err_f are
+        # still None here) cleanup, leaving nothing to write a terminal
+        # status -- the same "stuck running forever" failure this whole
+        # except branch exists to prevent.
+        workdir_path = Path(workdir).expanduser()
+        workdir_path.mkdir(parents=True, exist_ok=True)
+        _reset_run_logs(workdir_path)
+        stdout_log = workdir_path / "_mcp_stdout.log"
+        stderr_log = workdir_path / "_mcp_stderr.log"
+
         # Open log files for output redirection. Mode "wb" truncates per
         # run -- previously "ab" appended, which left the previous run's
         # events tail-readable by watch_video_status's _read_last_event()
@@ -393,6 +508,10 @@ async def _run_pipeline_and_update_status(
         child_env = {**os.environ, "WATCH_VIDEO_NO_PIPE": "1"}
         proc = await asyncio.create_subprocess_exec(
             *argv,
+            # Same hole _spawn_script closes: without this the orchestrator
+            # and every grandchild (ffmpeg reads stdin by default) inherit
+            # the host's JSON-RPC pipe and can eat the host's bytes.
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=out_f,
             stderr=err_f,
             env=child_env,
@@ -444,6 +563,34 @@ async def _run_pipeline_and_update_status(
                 "stdout_log": str(stdout_log),
                 "stderr_log": str(stderr_log),
             })
+    except asyncio.CancelledError:
+        # CancelledError is BaseException, not Exception -- the broad catch
+        # below never sees it. Without this branch, a cancelled task (host
+        # shutdown, task-group teardown) leaves the status file stuck at
+        # "running" forever, same failure mode _job_is_orphaned exists to
+        # detect for a dead server process, but for a task killed inside a
+        # live one. Write the terminal state, then re-raise so cancellation
+        # still propagates as normal.
+        #
+        # Cancelling this task does NOT touch the child process -- proc.wait()
+        # just stops being awaited, the subprocess keeps running and keeps
+        # writing artifacts into workdir, and a retry races it. Kill it first.
+        killed = False
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+                killed = True
+            except (ProcessLookupError, OSError):
+                pass
+        error = ("pipeline task cancelled; child process killed" if killed
+                  else "pipeline task cancelled")
+        _write_status(workdir, {
+            "state": "failed",
+            "completed_at": _time.time(),
+            "error": error,
+            "workdir": workdir,
+        })
+        raise
     except Exception as e:  # noqa: BLE001 -- status file is the only sink
         _write_status(workdir, {
             "state": "failed",
@@ -482,19 +629,17 @@ async def watch_video(
     no_docx: bool = False,
     ctx: Context | None = None,
 ) -> str:
-    """[DEPRECATED on Claude Desktop / Windows -- prefer watch_video_start +
-    watch_video_status, see below.] Run the watch-video pipeline on an input.
+    """Run the watch-video pipeline on an input and block until it finishes.
 
-    This tool blocks until the pipeline completes. On Claude Desktop + Windows
-    it hangs reliably due to a stdio JSON-RPC pipe-buffer interaction during
-    long-running tool calls; see https://github.com/MarcinSufa/claude-watch-video/issues/1.
-    Other MCP hosts (Cursor, Cline, etc.) and direct Python callers may still
-    work fine with this tool; it's kept for backwards compatibility.
-
-    For Claude Desktop and any other host where this tool hangs, use the
-    `watch_video_start(input_ref, ...)` + `watch_video_status(job_id)` polling
-    pair instead. Same artifacts, same workdir, but every tool call returns
-    in <100ms so no stdio pressure.
+    Runs through the same log-file-backed runner as watch_video_start, so
+    subprocess output is no longer piped: no 10-75 s per-step drain latency
+    and no orchestrator-side deadlock at that layer. It still holds this one
+    tool call open for the whole pipeline though -- minutes with --ocr or
+    local Whisper transcription -- and a host that penalizes long-running
+    tool calls (Claude Desktop on Windows among them) can still stall on
+    that, independent of the subprocess-piping fix. `watch_video_start(input_ref,
+    ...)` + `watch_video_status(job_id)` remain the recommended pattern
+    there. Same artifacts, same workdir either way.
 
     Args:
         input_ref: A local path, a public URL (YouTube, Loom, etc.), a Jira
@@ -513,8 +658,9 @@ async def watch_video(
             protection. Default true. Automatically skipped on a run with no
             transcript (silent or no-audio video), where it would drop the
             small UI changes a screen recording exists to show.
-        ocr: Run Tesseract OCR on kept frames (useful for screen recordings).
-            Default false.
+        ocr: Run Tesseract OCR on kept frames. Default false. Costs 1.7-2.3 s
+            per frame plus a cold start; for a silent UI recording, reading
+            frames/ directly is faster.
         whisper: Transcription source. 'auto' (default) prefers VTT captions
             when yt-dlp pulled one (free, fast), else local faster-whisper.
             Other values: 'captions', 'local', 'groq', 'openai'.
@@ -529,39 +675,50 @@ async def watch_video(
         path to read_transcript / read_report / read_highlights / post_to_jira
         in follow-up tool calls.
     """
-    args = [input_ref]
-    if workdir:
-        args += ["--workdir", workdir]
-    if attachment_id:
-        args += ["--attachment-id", attachment_id]
-    if frames is not None:
-        args += ["--frames", str(frames)]
-    if dedup:
-        args.append("--dedup")
-    if ocr:
-        args.append("--ocr")
-    if whisper and whisper != "auto":
-        args += ["--whisper", whisper]
-    if start:
-        args += ["--start", start]
-    if end:
-        args += ["--end", end]
-    if no_html:
-        args.append("--no-html")
-    if no_docx:
-        args.append("--no-docx")
+    job_id = str(Path(workdir or _default_workdir(input_ref, attachment_id))
+                 .expanduser().resolve())
 
-    rc, stdout, stderr = await _spawn_script("watch_video.py", *args, ctx=ctx)
-    if rc != 0:
-        # stdout still matters here: an AMBIGUOUS exit carries its candidate
-        # attachments there, and this tool used to discard it.
-        tail = "\n".join(stderr.strip().splitlines()[-20:])
-        payload = _failure_payload(rc, stdout, tail)
-        if payload.get("ambiguous"):
-            raise RuntimeError(payload["error"] + "\n"
-                               + json.dumps(payload["ambiguous"], indent=2))
-        raise RuntimeError(_format_child_error(rc, stderr, "watch_video.py"))
-    return _extract_final_json(stdout)
+    # A job already running for this workdir (started via watch_video_start,
+    # or a concurrent watch_video call) owns the pipeline -- spawning a
+    # second one would race it for the same artifacts, logs, cache, and
+    # status file. Wait on that one instead of starting a fresh one.
+    if _existing_running_job(job_id) is not None:
+        while True:
+            status = _read_status(job_id)
+            # None: the status file vanished from under the job. Orphaned:
+            # the process that owned it is gone (see _job_is_orphaned), so
+            # nothing will ever write a terminal state -- spinning here
+            # would wait forever. Either way, stop and let the caller see it.
+            if status is None or status.get("state") != "running" or _job_is_orphaned(status):
+                break
+            await asyncio.sleep(1)
+    else:
+        args = _build_pipeline_args(
+            input_ref, job_id, attachment_id, frames, dedup, ocr, whisper,
+            start, end, no_html, no_docx)
+        _prepare_run_logs(job_id)
+        _write_status(job_id, {
+            "state": "running",
+            "started_at": _time.time(),
+            "input_ref": input_ref,
+            "workdir": job_id,
+            "server_pid": os.getpid(),
+        })
+        await _run_pipeline_and_update_status(job_id, args)
+        status = _read_status(job_id)
+    if status is None:
+        raise RuntimeError(f"pipeline finished but wrote no status at {job_id}")
+    if _job_is_orphaned(status):
+        raise RuntimeError(
+            f"the job running for this workdir was orphaned (owning process "
+            f"{status.get('server_pid')} is no longer running); call "
+            f"watch_video_start again for {job_id} to run it fresh")
+    if status["state"] == "failed":
+        error = status.get("error", "unknown error")
+        if status.get("ambiguous"):
+            raise RuntimeError(error + "\n" + json.dumps(status["ambiguous"], indent=2))
+        raise RuntimeError(error)
+    return json.dumps(status["meta"])
 
 
 @mcp.tool()
@@ -581,10 +738,12 @@ async def watch_video_start(
     """Start the watch-video pipeline as a background job. Returns immediately
     with a job_id; poll watch_video_status to track completion.
 
-    This is the recommended pattern on Claude Desktop and any other host where
-    the blocking `watch_video` tool hangs due to stdio JSON-RPC buffer pressure
-    during long-running tool calls. Each call to start/status returns within
-    ~100ms, so no pipe-buffer issues. The agent (you) is expected to poll the
+    This is the recommended pattern on Claude Desktop and any other host that
+    penalizes a long-running tool call: the blocking `watch_video` tool holds
+    one call open for the whole pipeline, which can still stall against
+    stdio JSON-RPC buffer pressure on such hosts even though it no longer
+    pipes its subprocess output. Each call to start/status returns within
+    ~100ms, so no such pressure here. The agent (you) is expected to poll the
     status tool every few seconds until the state is 'done'.
 
     Args:
@@ -616,55 +775,31 @@ async def watch_video_start(
     job_id = str(Path(resolved_workdir).expanduser().resolve())
 
     # Don't spawn a second pipeline for a workdir that already has one
-    # running in THIS server process -- both tasks would write the same
-    # artifacts, logs, cache, and _mcp_status.json, racing each other.
-    #
-    # Stale-running detection: if the status was written by a different
-    # server process (different pid), that process is gone -- Claude
-    # Desktop restarted, the MCP server crashed mid-job, etc. -- and the
-    # in-memory task that would have written the terminal state died with
-    # it. Treat the persisted "running" as stale and start fresh; otherwise
-    # the user is stuck polling a job that never completes.
-    existing = _read_status(job_id)
-    if existing and existing.get("state") == "running":
-        if not _job_is_orphaned(existing):
-            return json.dumps({
-                "job_id": job_id,
-                "state": "running",
-                "started_at": existing.get("started_at"),
-                "workdir": job_id,
-                "note": ("job already running for this workdir; reusing it. "
-                         "Poll watch_video_status until the state transitions."),
-            })
-        # else: stale from a previous server instance -- fall through and
-        # start a fresh pipeline (will overwrite the stale status below).
+    # running in THIS server process (see _existing_running_job). A "running"
+    # record from a since-exited server process doesn't count -- fall through
+    # and start a fresh pipeline (will overwrite the stale status below).
+    existing = _existing_running_job(job_id)
+    if existing is not None:
+        return json.dumps({
+            "job_id": job_id,
+            "state": "running",
+            "started_at": existing.get("started_at"),
+            "workdir": job_id,
+            "note": ("job already running for this workdir; reusing it. "
+                     "Poll watch_video_status until the state transitions."),
+        })
 
     # Build args for the CLI subprocess.
-    args = [input_ref, "--workdir", job_id]
-    if attachment_id:
-        args += ["--attachment-id", attachment_id]
-    if frames is not None:
-        args += ["--frames", str(frames)]
-    if dedup:
-        args.append("--dedup")
-    if ocr:
-        args.append("--ocr")
-    if whisper and whisper != "auto":
-        args += ["--whisper", whisper]
-    if start:
-        args += ["--start", start]
-    if end:
-        args += ["--end", end]
-    if no_html:
-        args.append("--no-html")
-    if no_docx:
-        args.append("--no-docx")
+    args = _build_pipeline_args(
+        input_ref, job_id, attachment_id, frames, dedup, ocr, whisper,
+        start, end, no_html, no_docx)
 
     # Write the initial "running" status BEFORE launching the background task,
     # so an immediate status poll always sees something. server_pid lets a
     # later watch_video_start detect stale-running state from a previous
     # server instance (see the duplicate-guard above).
     started_at = _time.time()
+    _prepare_run_logs(job_id)
     _write_status(job_id, {
         "state": "running",
         "started_at": started_at,
@@ -774,18 +909,11 @@ async def watch_video_status(job_id: str) -> str:
     return json.dumps(status, indent=2)
 
 
-def _read_last_event(workdir: str) -> dict | None:
-    """Return the most recent JSON event from <workdir>/_mcp_stderr.log.
-
-    Events are written one per line by _common.emit() in the pipeline
-    sub-scripts. Reads the file in chunks from the end so it stays cheap
-    even when the log gets long. Returns None on any error or missing log.
-    """
-    log_path = Path(workdir).expanduser() / "_mcp_stderr.log"
+def _tail_last_json_event(log_path: Path) -> dict | None:
+    """Return the last JSON-object line in log_path, tail-read from 8KB back."""
     if not log_path.is_file():
         return None
     try:
-        # Read the last 8KB; almost always contains the final line.
         size = log_path.stat().st_size
         with open(log_path, "rb") as f:
             f.seek(max(0, size - 8192))
@@ -801,6 +929,33 @@ def _read_last_event(workdir: str) -> dict | None:
     except OSError:
         return None
     return None
+
+
+def _read_last_event(workdir: str) -> dict | None:
+    """Return the most recent JSON event across _mcp_stderr.log and every
+    _step_logs/*.stderr.log, keyed by "ts".
+
+    _mcp_stderr.log only receives a sub-step's events after that step exits
+    (_run_step_via_log_files in scripts/watch_video.py forwards them on
+    completion), so during a long step (OCR on a big frame set) it shows a
+    stale event from the previous step. The live events are in that step's
+    own log under _step_logs/ the whole time it runs. Comparing "ts" across
+    both sources picks whichever is actually newest.
+    """
+    workdir_path = Path(workdir).expanduser()
+    candidates = [workdir_path / "_mcp_stderr.log"]
+    step_logs_dir = workdir_path / "_step_logs"
+    if step_logs_dir.is_dir():
+        candidates += sorted(step_logs_dir.glob("*.stderr.log"))
+
+    best: dict | None = None
+    for log_path in candidates:
+        event = _tail_last_json_event(log_path)
+        if event is None:
+            continue
+        if best is None or event.get("ts", 0) > best.get("ts", 0):
+            best = event
+    return best
 
 
 @mcp.tool()

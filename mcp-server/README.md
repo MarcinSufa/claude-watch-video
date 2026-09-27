@@ -203,7 +203,7 @@ MCP → HOST: { "issue_key": "PROJ-1234", "comment_id": "10247", ... }
 
 ## Versioning
 
-The MCP server's version (`v2.5.1`) tracks the parent repo. The CLI scripts in `../scripts/` are the canonical artifact; this package version-locks to whichever scripts are present at install time. Pinning to a specific repo tag (`git checkout v2.5.1` before `pip install -e .`) ensures the script API matches what the server expects.
+The MCP server's version (`v2.5.2`) tracks the parent repo. The CLI scripts in `../scripts/` are the canonical artifact; this package version-locks to whichever scripts are present at install time. Pinning to a specific repo tag (`git checkout v2.5.2` before `pip install -e .`) ensures the script API matches what the server expects.
 
 ---
 

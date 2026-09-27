@@ -35,6 +35,14 @@ from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".flv")
 DEFAULT_CREDS_PATH = Path.home() / ".atlassian-token" / "credentials.json"
+# YouTube often serves no pre-muxed file, only separate video and audio
+# streams, so a muxed-only selector fails. H.264 + AAC merge into mp4 without
+# re-encoding and decode on any ffmpeg build; 720p is plenty for 960px frames.
+URL_FORMAT_OPTS = {
+    "format": "bv*+ba/b",
+    "format_sort": ["res:720", "vcodec:h264", "acodec:aac"],
+    "merge_output_format": "mp4",
+}
 
 
 # ---- URL mode --------------------------------------------------------------
@@ -65,7 +73,7 @@ def fetch_url(url: str, workdir: Path) -> tuple[Path, dict]:
     ydl_opts = {
         "outtmpl": str(workdir / "%(title).100B.%(ext)s"),
         "restrictfilenames": True,  # filesystem-safe ASCII filenames
-        "format": "best[ext=mp4]/best",
+        **URL_FORMAT_OPTS,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,

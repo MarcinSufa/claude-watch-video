@@ -28,9 +28,11 @@ def _video(format_id: str, height: int, vcodec: str, ext: str = "mp4") -> dict:
             "width": height * 16 // 9, "vcodec": vcodec, "acodec": "none"}
 
 
-def _audio(format_id: str, acodec: str, ext: str) -> dict:
+def _audio(format_id: str, acodec: str, ext: str,
+           language: str | None = None, language_preference: int = -1) -> dict:
     return {"format_id": format_id, "url": f"https://example.invalid/{format_id}",
-            "ext": ext, "protocol": "https", "vcodec": "none", "acodec": acodec}
+            "ext": ext, "protocol": "https", "vcodec": "none", "acodec": acodec,
+            "language": language, "language_preference": language_preference}
 
 
 SPLIT_ONLY = [
@@ -70,3 +72,12 @@ def test_split_only_video_downloads_h264_720p_with_m4a_audio():
 
 def test_muxed_only_video_still_downloads():
     assert _select(MUXED_ONLY) == ["18"]
+
+
+def test_original_language_opus_beats_dubbed_aac():
+    formats = [
+        _video("298", 720, "avc1.4d4020"),
+        _audio("251", "opus", "webm", language="pl", language_preference=10),
+        _audio("140-de", "mp4a.40.2", "m4a", language="de", language_preference=-1),
+    ]
+    assert _select(formats) == ["298", "251"]

@@ -38,9 +38,11 @@ DEFAULT_CREDS_PATH = Path.home() / ".atlassian-token" / "credentials.json"
 # YouTube often serves no pre-muxed file, only separate video and audio
 # streams, so a muxed-only selector fails. H.264 + AAC merge into mp4 without
 # re-encoding and decode on any ffmpeg build; 720p is plenty for 960px frames.
+# "lang" must precede the codec: a dubbed AAC track would otherwise beat an
+# opus-only original and the transcript would be in the wrong language.
 URL_FORMAT_OPTS = {
     "format": "bv*+ba/b",
-    "format_sort": ["res:720", "vcodec:h264", "acodec:aac"],
+    "format_sort": ["res:720", "vcodec:h264", "lang", "acodec:aac"],
     "merge_output_format": "mp4",
 }
 

@@ -13,9 +13,13 @@ Usage:
     - A Jira issue URL (https://*.atlassian.net/browse/<KEY>)
     - The literal "auto" to grab newest video from ~/Downloads/
 
-Stdout: meta.json contents (single JSON object).
+Stdout: meta.json contents (single JSON object). Once frames exist this holds
+        on failure too: a non-zero exit still prints the partial meta.json,
+        with an `error` block naming the step.
 Stderr: structured events from each step.
-Exit codes: as defined in _common.ExitCode.
+Exit codes: as defined in _common.ExitCode. Optional steps after frames
+(transcribe, dedup, OCR, report, highlights) do not change the exit code
+when they fail; they land in meta.json `warnings` and the run continues.
 """
 from __future__ import annotations
 
@@ -27,6 +31,8 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +92,45 @@ def default_workdir(kind: str, value: str,
 
 # ---- Sub-script invocation -----------------------------------------------
 
+class StepFailed(Exception):
+    """A sub-script exited non-zero.
+
+    Before frames exist the run ends with the step's exit code and stdout
+    (AMBIGUOUS carries its candidates JSON there). After frames exist the
+    optional steps turn this into a meta.json warning and the run goes on;
+    see _soft_step and _entry.
+    """
+
+    def __init__(self, step: str, exit_code: int, stdout: str = "",
+                 msg: str = "") -> None:
+        super().__init__(f"step {step} exited {exit_code}: {msg}")
+        self.step = step
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.msg = msg
+
+
+def _error_msg_from_stderr(lines: list[str]) -> str:
+    """One-line reason from a failed child's stderr: its last `error` event
+    when it emitted one, else its last non-empty line (for a traceback, the
+    exception line)."""
+    last_line = ""
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        if not last_line:
+            last_line = line
+        if line.startswith("{"):
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("event") == "error":
+                return str(ev.get("msg") or line)
+    return last_line[:500]
+
+
 # Workdir for run_step log files. Set by main() ONLY when WATCH_VIDEO_NO_PIPE
 # is in the environment (set by the MCP server). When set, run_step writes
 # each sub-script's stdout/stderr directly to disk files in this dir instead
@@ -142,10 +187,8 @@ def _run_step_via_log_files(name: str, cmd: list[str]) -> dict:
         sys.stderr.flush()
 
     if rc != 0:
-        if stdout_data:
-            sys.stdout.write(stdout_data)
-            sys.stdout.flush()
-        sys.exit(rc)
+        raise StepFailed(name, rc, stdout_data,
+                         _error_msg_from_stderr(stderr_data.splitlines()))
     if not stdout_data.strip():
         die(ExitCode.IO_FAIL, f"step {name} produced no output")
     return json.loads(stdout_data.strip().splitlines()[-1])
@@ -160,8 +203,9 @@ def run_step(name: str, cmd: list[str]) -> dict:
     2. Default (CLI/skill): STREAM stderr line-by-line so users see progress
        events in real time. Collect stdout in full (parsed as JSON at end).
 
-    Propagate exit code on failure. On non-zero exits we also forward stdout
-    (needed for ExitCode.AMBIGUOUS where stdout carries the candidates JSON).
+    On a non-zero exit raise StepFailed with the child's exit code, stdout
+    (needed for ExitCode.AMBIGUOUS where stdout carries the candidates JSON)
+    and its error message; main()/_entry() decide what that costs the run.
     """
     if _STEP_LOGS_DIR is not None:
         return _run_step_via_log_files(name, cmd)
@@ -175,11 +219,14 @@ def run_step(name: str, cmd: list[str]) -> dict:
         bufsize=1,  # line-buffered
     )
 
+    stderr_tail: deque[str] = deque(maxlen=50)
+
     def _pump_stderr() -> None:
         assert proc.stderr is not None
         for line in proc.stderr:
             sys.stderr.write(line)
             sys.stderr.flush()
+            stderr_tail.append(line)
 
     stderr_thread = threading.Thread(target=_pump_stderr, daemon=True)
     stderr_thread.start()
@@ -190,13 +237,33 @@ def run_step(name: str, cmd: list[str]) -> dict:
     stderr_thread.join(timeout=2)
 
     if proc.returncode != 0:
-        if stdout_data:
-            sys.stdout.write(stdout_data)
-            sys.stdout.flush()
-        sys.exit(proc.returncode)
+        raise StepFailed(name, proc.returncode, stdout_data,
+                         _error_msg_from_stderr(list(stderr_tail)))
     if not stdout_data.strip():
         die(ExitCode.IO_FAIL, f"step {name} produced no output")
     return json.loads(stdout_data.strip().splitlines()[-1])
+
+
+def _soft_step(name: str, fn: Any, *args: Any,
+               **kwargs: Any) -> tuple[Any, dict | None]:
+    """Run an optional post-frames step whose failure must not cost the agent
+    the frames already on disk. Returns (result, None) on success or
+    (None, {"exit_code", "msg"}) on failure: a child that exited non-zero, an
+    in-process step that called die(), or one that raised (MCP mode runs
+    transcribe/dedup/report in-process)."""
+    try:
+        return fn(*args, **kwargs), None
+    except StepFailed as e:
+        return None, {"exit_code": e.exit_code, "msg": e.msg}
+    except SystemExit as e:
+        if e.code in (0, None):
+            raise
+        return None, {"exit_code": e.code,
+                      "msg": getattr(e, "watch_msg", None)
+                      or f"{name} exited {e.code}"}
+    except Exception as e:  # noqa: BLE001 -- recorded as a warning in meta
+        traceback.print_exc(file=sys.stderr)
+        return None, {"exit_code": None, "msg": f"{type(e).__name__}: {e}"}
 
 
 def fetch(kind: str, value: str, workdir: Path,
@@ -384,6 +451,57 @@ def post_to_jira(workdir: Path, jira_key: str | None,
 
 # ---- Main ----------------------------------------------------------------
 
+# Set by main() as soon as frames/ exist. From then on _entry() turns every
+# non-zero exit into "print the partial meta.json, then exit": the agent can
+# still answer from the frames even when a later step broke.
+_PARTIAL_META_PATH: Path | None = None
+
+
+def _print_partial_meta(code: int, step: str | None, msg: str) -> int:
+    assert _PARTIAL_META_PATH is not None
+    try:
+        meta = json.loads(_PARTIAL_META_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        meta = {"workdir": str(_PARTIAL_META_PATH.parent)}
+    meta["error"] = {"exit_code": code, "step": step, "msg": msg}
+    try:
+        staging = atomic_path(_PARTIAL_META_PATH)
+        staging.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        finalize(staging, _PARTIAL_META_PATH)
+    except OSError:
+        pass
+    emit("partial_meta", step="orchestrator", exit_code=code, failed_step=step,
+         meta_path=str(_PARTIAL_META_PATH))
+    print(json.dumps(meta, indent=2))
+    sys.stdout.flush()
+    return code
+
+
+def _entry() -> int:
+    """CLI entry point: main() plus the failure contract on stdout."""
+    try:
+        return main()
+    except StepFailed as e:
+        if _PARTIAL_META_PATH is None:
+            # Before frames: keep the step's own stdout (AMBIGUOUS candidates).
+            if e.stdout:
+                sys.stdout.write(e.stdout)
+                sys.stdout.flush()
+            return e.exit_code
+        return _print_partial_meta(e.exit_code, e.step, e.msg)
+    except SystemExit as e:
+        if e.code in (0, None) or _PARTIAL_META_PATH is None:
+            raise
+        code = e.code if isinstance(e.code, int) else 1
+        return _print_partial_meta(code, None, getattr(e, "watch_msg", None)
+                                   or f"exited {code}; see the error event on stderr")
+    except Exception as e:  # noqa: BLE001
+        if _PARTIAL_META_PATH is None:
+            raise
+        traceback.print_exc(file=sys.stderr)
+        return _print_partial_meta(1, None, f"{type(e).__name__}: {e}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Watch a video: frames + transcript for Claude to consume.")
@@ -530,6 +648,8 @@ def main() -> int:
                          "ANTHROPIC_API_KEY is set.")
     args = ap.parse_args()
 
+    global _PARTIAL_META_PATH
+    _PARTIAL_META_PATH = None
     overall_t0 = time.time()
     kind, value = classify_input(args.input)
     workdir = Path(args.workdir).resolve() if args.workdir else default_workdir(kind, value, args.attachment_id)
@@ -560,6 +680,9 @@ def main() -> int:
     meta.setdefault("input", {"raw": args.input, "kind": kind, "value": value})
     meta.setdefault("window", {"start": args.start, "end": args.end})
     meta.setdefault("report", None)
+    # Per-run diagnostics; never inherited from a previous run's meta.json.
+    meta["warnings"] = []
+    meta.pop("error", None)
     if args.no_cache:
         meta["cache"] = {"schema": 1, "steps": {}}
     get_cache(meta)  # ensure cache block exists
@@ -577,6 +700,12 @@ def main() -> int:
         staging = atomic_path(meta_path)
         staging.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         finalize(staging, meta_path)
+
+    def warn(step: str, msg: str, **extra: Any) -> None:
+        """A non-fatal problem the agent must see: stderr event + meta.json."""
+        emit("warning", step=step, msg=msg, **extra)
+        meta.setdefault("warnings", []).append({"step": step, "msg": msg, **extra})
+        save_meta()
 
     # 1. Fetch ---------------------------------------------------------------
     fetch_fp_inputs = {
@@ -676,6 +805,8 @@ def main() -> int:
         meta["frames"] = frames_info
         record_step(meta, "frames", frames_fp, [frames_dir])
     save_meta()
+    # Frames are on disk: from here every exit prints meta.json (see _entry).
+    _PARTIAL_META_PATH = meta_path
 
     # 4. Transcribe (optional) ----------------------------------------------
     transcribe_info: dict | None = None
@@ -700,11 +831,6 @@ def main() -> int:
         effective_whisper = args.whisper
         if effective_whisper == "auto":
             effective_whisper = "captions" if captions_vtt_path else "local"
-        elif effective_whisper == "captions" and not captions_vtt_path:
-            die(ExitCode.BAD_INPUT,
-                "--whisper captions requested but no VTT was downloaded. "
-                "The source platform may not supply captions for this video. "
-                "Try --whisper local (or omit --whisper to auto-fall-back).")
         emit("info", step="transcribe", resolved_provider=effective_whisper,
              requested_provider=args.whisper,
              captions_available=bool(captions_vtt_path))
@@ -726,16 +852,37 @@ def main() -> int:
             transcribe_info = meta.get("transcript")
         else:
             invalidate_downstream(meta, "transcribe")
-            transcribe_info = transcribe(
-                video, workdir, args.model, args.lang,
-                args.start, args.end,
-                effective_whisper, args.whisper_api_key,
-                args.whisper_credentials,
-                captions_vtt=captions_vtt_path if effective_whisper == "captions" else None,
-            )
-            meta["transcript"] = transcribe_info
-            meta["skipped_audio_reason"] = None
-            record_step(meta, "transcribe", transcribe_fp, transcript_outputs)
+            if effective_whisper == "captions" and not captions_vtt_path:
+                failure: dict | None = {
+                    "exit_code": ExitCode.BAD_INPUT,
+                    "msg": "--whisper captions requested but no VTT was "
+                           "downloaded (the platform may not supply captions "
+                           "for this video); try --whisper local or omit "
+                           "--whisper"}
+            else:
+                transcribe_info, failure = _soft_step(
+                    "transcribe", transcribe,
+                    video, workdir, args.model, args.lang,
+                    args.start, args.end,
+                    effective_whisper, args.whisper_api_key,
+                    args.whisper_credentials,
+                    captions_vtt=captions_vtt_path if effective_whisper == "captions" else None,
+                )
+            if failure:
+                # Frames-only beats an empty stdout: the agent can still
+                # answer from the frames and sees why there is no transcript.
+                transcribe_info = None
+                reason = f"transcription failed ({effective_whisper}): {failure['msg']}"
+                meta["transcript"] = None
+                meta["skipped_audio_reason"] = reason
+                meta["cache"]["steps"].pop("transcribe", None)
+                invalidate_downstream(meta, "transcribe")
+                warn("transcribe", reason + "; continuing frames-only",
+                     exit_code=failure["exit_code"])
+            else:
+                meta["transcript"] = transcribe_info
+                meta["skipped_audio_reason"] = None
+                record_step(meta, "transcribe", transcribe_fp, transcript_outputs)
     save_meta()
 
     # Track the transcribe step fingerprint for downstream cache inputs.
@@ -752,10 +899,10 @@ def main() -> int:
         # dropped 22 of 30 frames and made the date field the tester typed
         # into unreadable: two consecutive frames of a UI repro differ by one
         # character, so a perceptual hash is supposed to call them duplicates.
-        emit("warning", step="dedup",
-             msg="skipped: no transcript, so dedup would drop the small UI "
-                 "changes this run exists to capture. Bound the frame budget "
-                 "with --frames N (MCP: frames=N) instead.",
+        warn("dedup",
+             "skipped: no transcript, so dedup would drop the small UI "
+             "changes this run exists to capture. Bound the frame budget "
+             "with --frames N (MCP: frames=N) instead.",
              reason=meta.get("skipped_audio_reason") or "no transcript")
     elif args.dedup:
         dedup_fp_inputs = {
@@ -771,13 +918,18 @@ def main() -> int:
                  frame_count=meta.get("frames", {}).get("frame_count"))
         else:
             invalidate_downstream(meta, "dedup")
-            smart_dedup(workdir,
-                        args.dedup_threshold,
-                        args.dedup_min_interval,
-                        args.dedup_protect_window)
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            record_step(meta, "dedup", dedup_step_fp, [frames_dir])
-            save_meta()
+            _, failure = _soft_step("dedup", smart_dedup, workdir,
+                                    args.dedup_threshold,
+                                    args.dedup_min_interval,
+                                    args.dedup_protect_window)
+            if failure:
+                dedup_step_fp = None
+                warn("dedup", f"dedup failed, all frames kept: {failure['msg']}",
+                     exit_code=failure["exit_code"])
+            else:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                record_step(meta, "dedup", dedup_step_fp, [frames_dir])
+                save_meta()
 
     # 6. OCR (optional) -----------------------------------------------------
     ocr_step_fp: str | None = None
@@ -794,10 +946,18 @@ def main() -> int:
             emit("cache_hit", step="ocr", fingerprint=ocr_step_fp)
         else:
             invalidate_downstream(meta, "ocr")
-            ocr(workdir, args.ocr_lang, args.ocr_min_text_length)
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            record_step(meta, "ocr", ocr_step_fp, [ocr_path])
-            save_meta()
+            _, failure = _soft_step("ocr", ocr, workdir, args.ocr_lang,
+                                    args.ocr_min_text_length)
+            if failure:
+                # Typically Tesseract missing (exit 3). OCR is an aid for
+                # grepping on-screen text; the frames are still readable.
+                ocr_step_fp = None
+                warn("ocr", f"OCR skipped: {failure['msg']}",
+                     exit_code=failure["exit_code"])
+            else:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                record_step(meta, "ocr", ocr_step_fp, [ocr_path])
+                save_meta()
 
     # 7. Report (optional) --------------------------------------------------
     if not args.no_report:
@@ -841,20 +1001,24 @@ def main() -> int:
         if is_cached(meta, "report", report_fp, expected_report_outputs):
             emit("cache_hit", step="report", fingerprint=report_fp)
         else:
-            report_info = report(workdir,
-                                 no_html=args.no_html,
-                                 no_docx=args.no_docx)
-            meta["report"] = report_info
-            # Record only outputs that actually exist so cache state matches
-            # disk state on the next run (docx may still be skipped by
-            # warning if python-docx is uninstalled between probe and run).
-            actual_outputs = [report_path]
-            if not args.no_html and (workdir / "report.html").exists():
-                actual_outputs.append(workdir / "report.html")
-            if not args.no_docx and (workdir / "report.docx").exists():
-                actual_outputs.append(workdir / "report.docx")
-            record_step(meta, "report", report_fp, actual_outputs)
-            save_meta()
+            report_info, failure = _soft_step("report", report, workdir,
+                                              no_html=args.no_html,
+                                              no_docx=args.no_docx)
+            if failure:
+                warn("report", f"report generation failed: {failure['msg']}",
+                     exit_code=failure["exit_code"])
+            else:
+                meta["report"] = report_info
+                # Record only outputs that actually exist so cache state matches
+                # disk state on the next run (docx may still be skipped by
+                # warning if python-docx is uninstalled between probe and run).
+                actual_outputs = [report_path]
+                if not args.no_html and (workdir / "report.html").exists():
+                    actual_outputs.append(workdir / "report.html")
+                if not args.no_docx and (workdir / "report.docx").exists():
+                    actual_outputs.append(workdir / "report.docx")
+                record_step(meta, "report", report_fp, actual_outputs)
+                save_meta()
 
     meta["generated_at"] = int(time.time())
     meta["elapsed_seconds"] = round(time.time() - overall_t0, 2)
@@ -864,8 +1028,18 @@ def main() -> int:
     # When --highlights-prompt is set, we call highlights.py which writes
     # highlights.json + adds a `highlights` block to meta. post_to_jira.py's
     # summary mode auto-picks up highlights.json when present.
-    if args.highlights_prompt and transcribe_info is not None:
-        run_highlights(
+    #
+    # Optional and paid: a missing key or a provider error is a warning in
+    # meta.json, not an exit. In a Claude Code session the agent picks the
+    # moments itself from frames + transcript, so nothing is lost.
+    if args.highlights_prompt and transcribe_info is None:
+        warn("highlights",
+             "--highlights-prompt ignored: highlights need a transcript and "
+             f"there is none ({meta.get('skipped_audio_reason') or 'no transcript'}). "
+             "Pick the moments from the frames instead.")
+    elif args.highlights_prompt:
+        _, failure = _soft_step(
+            "highlights", run_highlights,
             workdir,
             prompt=args.highlights_prompt,
             max_n=args.highlights_max_n,
@@ -878,7 +1052,11 @@ def main() -> int:
             provider=args.highlights_provider,
             base_url=args.highlights_base_url,
         )
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if failure:
+            warn("highlights", f"highlights skipped: {failure['msg']}",
+                 exit_code=failure["exit_code"])
+        else:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
     # 8. Optionally post to Jira -- NEVER default on, never auto-added by the
     # agent. Per the skill's no-unsolicited-Jira-writes rule, this only runs
@@ -905,4 +1083,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_entry())

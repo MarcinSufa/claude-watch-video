@@ -174,9 +174,15 @@ def emit(event: str, **kwargs: Any) -> None:
 
 
 def die(code: int, msg: str, **extra: Any) -> NoReturn:
-    """Emit an error event and exit with the given code. Never returns."""
+    """Emit an error event and exit with the given code. Never returns.
+
+    The message rides on the SystemExit as `watch_msg` so an in-process
+    caller (watch_video.py in MCP mode) can record why a step stopped.
+    """
     emit("error", exit_code=code, msg=msg, **extra)
-    sys.exit(code)
+    exc = SystemExit(code)
+    exc.watch_msg = msg  # type: ignore[attr-defined]
+    raise exc
 
 
 # ---- Time-window parsing --------------------------------------------------

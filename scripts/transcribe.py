@@ -40,7 +40,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, NoReturn
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import (  # noqa: E402
@@ -308,6 +308,15 @@ def transcribe_from_captions(workdir: Path,
 
 # ---- Local provider (faster-whisper) -------------------------------------
 
+def _die_local_transcribe(e: Exception) -> NoReturn:
+    msg = f"faster-whisper transcribe failed: {type(e).__name__}: {e}"
+    if "metadata_errors" in str(e):
+        # faster-whisper 1.2.x passes metadata_errors= to av.open(); PyAV 19
+        # removed it. av 16-18 accept it.
+        msg += " (PyAV 19 is incompatible with this faster-whisper; run: pip install 'av<19')"
+    die(ExitCode.IO_FAIL, msg)
+
+
 def transcribe_local(workdir: Path, model_name: str,
                      language: str | None) -> tuple[list[Segment], dict]:
     try:
@@ -321,18 +330,26 @@ def transcribe_local(workdir: Path, model_name: str,
 
     emit("start", step="whisper_load", provider="local", model=model_name)
     t0 = time.time()
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    try:
+        model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    except Exception as e:  # noqa: BLE001 -- download/offline/bad model id
+        die(ExitCode.IO_FAIL,
+            f"could not load whisper model {model_name!r}: {type(e).__name__}: {e}",
+            model=model_name)
     emit("complete", step="whisper_load", duration_seconds=round(time.time() - t0, 2))
 
     emit("start", step="transcribe", provider="local", language=language or "auto")
     t0 = time.time()
-    segments_iter, info = model.transcribe(
-        str(audio_wav),
-        beam_size=5,
-        language=language,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
-    )
+    try:
+        segments_iter, info = model.transcribe(
+            str(audio_wav),
+            beam_size=5,
+            language=language,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
+        )
+    except Exception as e:  # noqa: BLE001 -- surfaced as a structured error
+        _die_local_transcribe(e)
     # Iterate manually so we can emit per-N-segment progress events. The
     # iterator is lazy -- each `next()` produces one segment after Whisper
     # decodes it. We don't know the segment total until it's done, so progress
@@ -342,15 +359,18 @@ def transcribe_local(workdir: Path, model_name: str,
     PROGRESS_EVERY_SECONDS = 5.0
     segments: list[Segment] = []
     last_emit_at = time.time()
-    for i, s in enumerate(segments_iter, 1):
-        segments.append(Segment(start=float(s.start), end=float(s.end), text=s.text.strip()))
-        now = time.time()
-        if i % PROGRESS_EVERY_N == 0 or (now - last_emit_at) > PROGRESS_EVERY_SECONDS:
-            emit("progress", step="transcribe",
-                 segments_done=i,
-                 audio_position_seconds=round(s.end, 1),
-                 elapsed_seconds=round(now - t0, 1))
-            last_emit_at = now
+    try:
+        for i, s in enumerate(segments_iter, 1):
+            segments.append(Segment(start=float(s.start), end=float(s.end), text=s.text.strip()))
+            now = time.time()
+            if i % PROGRESS_EVERY_N == 0 or (now - last_emit_at) > PROGRESS_EVERY_SECONDS:
+                emit("progress", step="transcribe",
+                     segments_done=i,
+                     audio_position_seconds=round(s.end, 1),
+                     elapsed_seconds=round(now - t0, 1))
+                last_emit_at = now
+    except Exception as e:  # noqa: BLE001 -- the iterator decodes lazily
+        _die_local_transcribe(e)
     emit("complete", step="transcribe",
          duration_seconds=round(time.time() - t0, 2),
          segment_count=len(segments),

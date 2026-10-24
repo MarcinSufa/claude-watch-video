@@ -52,9 +52,9 @@ def find_tesseract() -> str | None:
             return candidate
     die(ExitCode.MISSING_DEP,
         "Tesseract not found. Install it first.\n"
-        "  Windows: winget install UB-Mannheim.TesseractOCR\n"
+        "  Linux:   sudo apt install tesseract-ocr  (or dnf/pacman equivalent)\n"
         "  macOS:   brew install tesseract\n"
-        "  Linux:   apt install tesseract-ocr  (or dnf/pacman equivalent)\n"
+        "  Windows: winget install UB-Mannheim.TesseractOCR\n"
         "Also: pip install --user pytesseract Pillow",
         dependency="tesseract")
 

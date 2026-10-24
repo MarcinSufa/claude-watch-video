@@ -312,6 +312,18 @@ def _failure_payload(rc: int, stdout_text: str, stderr_tail: str) -> dict:
         parsed = json.loads(_extract_final_json(stdout_text))
     except json.JSONDecodeError:
         return payload
+    if isinstance(parsed, dict) and "schema_version" in parsed:
+        # Frames existed when the run failed: watch_video.py printed the
+        # partial meta.json. Hand it over so the agent can still answer
+        # from the frames, and say which step broke.
+        payload["meta"] = parsed
+        err = parsed.get("error") or {}
+        if err.get("msg"):
+            payload["error"] = (
+                f"watch_video.py exited with code {rc} in step "
+                f"{err.get('step') or 'unknown'}: {err['msg']}. Frames and "
+                f"partial meta are in meta.workdir.")
+        return payload
     if isinstance(parsed, dict) and parsed.get("ambiguous"):
         payload["ambiguous"] = parsed
         payload["error"] = (

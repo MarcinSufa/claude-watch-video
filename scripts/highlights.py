@@ -120,7 +120,10 @@ def _load_api_key(provider: str, explicit: str | None, creds_path: Path) -> str:
         f"No {provider} API key found. Set one of:\n"
         f"  - env var {env_var}\n"
         f"  - '{creds_field}' field in {creds_path}\n"
-        "  - --anthropic-api-key flag (one-shot, not persisted)",
+        "  - --highlights-api-key on watch_video.py (--anthropic-api-key when "
+        "calling highlights.py directly; one-shot, not persisted)\n"
+        "Highlights are optional: in a Claude Code session the agent picks "
+        "the moments from frames + transcript without any key.",
         provider=provider,
         env_var=env_var,
         creds_path=str(creds_path),

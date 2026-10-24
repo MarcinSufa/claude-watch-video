@@ -179,12 +179,15 @@ Cleanup: leave the workdir in place after analysis so the user can rerun. Remove
     "elapsed_seconds": 10.55
   },
   "report": {"report_path": "..."},
+  "warnings": [],
   "elapsed_seconds": 20.77
 }
 ```
 
-- When `transcript` is `null`, `skipped_audio_reason` tells you why (silent track, no audio stream, or `--no-audio`).
-- When `report` is `null`, the user passed `--no-report` (or the orchestrator hasn't reached the report step due to a prior failure).
+- When `transcript` is `null`, `skipped_audio_reason` tells you why (silent track, no audio stream, `--no-audio`, or `transcription failed (<provider>): <reason>`).
+- `warnings` lists non-fatal problems of this run as `{step, msg, exit_code?}`: dedup skipped (no transcript), dedup/OCR/report/highlights failed, `--highlights-prompt` ignored for lack of a transcript, transcription failed. Reset on every run.
+- `error` (`{exit_code, step, msg}`) appears only on a non-zero exit after frames existed; stdout still carries the partial meta.
+- When `report` is `null`, the user passed `--no-report` (or the report step failed, see `warnings`).
 - `frames.timestamps_by_frame` is the authoritative source for per-frame timestamps (works for both uniform and scene-change modes; needed because non-uniform spacing breaks fps-based math).
 - `frames.dedup` only present when `--dedup` ran.
 
@@ -373,7 +376,7 @@ The pattern is two tools used together:
    Which one should I watch?
    ```
 
-4. **Handle errors.** Non-zero exit codes (see Exit codes section). Auth failures (4) → tell the user to check `credentials.json`. Missing deps (3) → tell them what to install.
+4. **Handle errors.** Read meta.json `warnings` and `skipped_audio_reason` even on exit 0 and tell the user what was skipped (e.g. "no transcript: faster-whisper failed, answered from frames only"). Non-zero exit codes: see Exit codes section. Auth failures (4) → tell the user to check `credentials.json`. Missing deps (3) → tell them what to install.
 
 5. **Fall back to semi-auto for Jira if no token.** If `--jira-key` exits with code `2` (BAD_INPUT) and the message mentions `credentials not found`, fall back to:
    - Call MCP `getJiraIssue` with `fields=["attachment", "summary"]`
@@ -430,12 +433,14 @@ The pattern is two tools used together:
 
 ## Exit codes
 
+For `watch_video.py`, a non-zero exit means fetch, probe or frames failed (nothing usable on disk), or `--post-to-jira` failed. Once frames exist, stdout always carries meta.json, also on a non-zero exit (then with an `error: {exit_code, step, msg}` block). Optional steps after frames never change the exit code: a failed transcription continues frames-only with `skipped_audio_reason`, and failed dedup / OCR (e.g. no Tesseract) / report / highlights (e.g. no API key) become entries in meta.json `warnings`. Always read `warnings`.
+
 | Code | Name | Meaning |
 |---|---|---|
-| 0 | OK | success |
+| 0 | OK | success (check `warnings` and `skipped_audio_reason`) |
 | 2 | BAD_INPUT | missing arg, file not found, invalid value (incl. missing `credentials.json` for Jira mode) |
-| 3 | MISSING_DEP | `ffmpeg`/`faster_whisper`/`yt_dlp` not on PATH |
-| 4 | AUTH_FAIL | Atlassian 401 — check email/token in `credentials.json` |
+| 3 | MISSING_DEP | `ffmpeg` (or `yt_dlp` for URLs) not on PATH. Missing faster-whisper / Tesseract / Pillow after frames is a warning, not an exit |
+| 4 | AUTH_FAIL | Atlassian 401 on Jira fetch or `--post-to-jira` — check email/token in `credentials.json`. (A missing highlights or hosted-Whisper key is a warning, not an exit) |
 | 5 | AMBIGUOUS | multiple matches (e.g. multiple video attachments on a Jira issue). Stdout has `candidates`. |
 | 6 | IO_FAIL | disk full, write failed, corrupted download |
 | 7 | TIMEOUT | network/subprocess timeout |

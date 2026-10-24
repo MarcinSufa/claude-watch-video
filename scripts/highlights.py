@@ -38,7 +38,9 @@ from _common import (ExitCode, PARA_TS_RE, atomic_path, die, emit,  # noqa: E402
 
 DEFAULT_PROVIDER = "anthropic"
 PROVIDER_DEFAULT_MODEL = {
-    "anthropic":     "claude-haiku-4-5-20251001",
+    # Alias, not a dated snapshot id: it follows the current Haiku 4.5
+    # snapshot, so the default does not go stale when a snapshot retires.
+    "anthropic":     "claude-haiku-4-5",
     "openai":        "gpt-4o-mini",
     "groq":          "llama-3.1-70b-versatile",
     "deepseek":      "deepseek-chat",       # also: deepseek-reasoner, deepseek-coder

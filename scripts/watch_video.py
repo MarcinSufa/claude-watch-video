@@ -627,7 +627,7 @@ def main() -> int:
     ap.add_argument("--highlights-max-n", type=int, default=None,
                     help="max number of highlights the LLM is allowed to pick (default 5)")
     ap.add_argument("--highlights-model", default=None,
-                    help="Anthropic model id (default claude-haiku-4-5-20251001)")
+                    help="model id for the highlights provider (default per provider, see PROVIDER_DEFAULT_MODEL in highlights.py)")
     ap.add_argument("--highlights-provider",
                     choices=("anthropic", "openai", "groq", "deepseek",
                              "gemini", "openai-compat"),

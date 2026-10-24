@@ -71,7 +71,13 @@ pip install -e .
 
 # Optionally install everything the underlying CLI needs:
 pip install -e ".[full]"
+
+# Developing? Add the test extra and run the unit tests:
+pip install -e ".[full,test]"
+python3 -m pytest -q
 ```
+
+Dependency pins: `mcp>=1,<2` (mcp 2.x renamed FastMCP, so `server.py` cannot import against it) and, in `[full]`, `av<19` (PyAV 19 dropped the `metadata_errors` argument faster-whisper 1.2.x passes, which breaks every local transcription).
 
 After install, the `claude-watch-video-mcp` command is on your PATH.
 

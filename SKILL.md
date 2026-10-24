@@ -212,7 +212,7 @@ Skip generation with `--no-report` if you only need raw artifacts.
 
 - **ffmpeg** on PATH (`winget install Gyan.FFmpeg`)
 - **Python 3.10+** on PATH
-- **faster-whisper**: `pip install --user faster-whisper`
+- **faster-whisper**: `pip install --user faster-whisper 'av<19'` (PyAV 19 breaks faster-whisper 1.2.x with `TypeError: ... 'metadata_errors'`)
 - **yt-dlp**: `pip install --user yt-dlp` (for URL mode)
 - **Pillow + imagehash**: `pip install --user Pillow imagehash` (for `--dedup`)
 - **Tesseract + pytesseract** (for `--ocr`):

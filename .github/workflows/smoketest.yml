@@ -41,10 +41,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      # ffmpeg is the only non-Python dependency the default smoketest needs.
-      # (The smoketest uses --no-audio, so faster-whisper is not required.
-      # Pillow / imagehash / python-docx are also optional -- omitted to keep
-      # the install footprint minimal.)
+      # ffmpeg is the only non-Python binary the pipeline needs. The Python
+      # side (mcp<2, faster-whisper + av<19, Pillow, pytest, ...) comes from
+      # the mcp-server extras below, the same install the docs give users.
       - name: Install ffmpeg (Ubuntu)
         if: runner.os == 'Linux'
         run: |
@@ -60,9 +59,19 @@ jobs:
         shell: bash
 
       # Catches syntax errors / import-time failures in any script without
-      # actually running the pipeline.
+      # actually running the pipeline. A glob, so a new script cannot be missed.
       - name: py_compile every script
-        run: python -m py_compile scripts/_cache.py scripts/_common.py scripts/dedup.py scripts/fetch.py scripts/frames.py scripts/highlights.py scripts/ocr.py scripts/post_to_jira.py scripts/probe.py scripts/report.py scripts/smoketest.py scripts/transcribe.py scripts/watch_batch.py scripts/watch_video.py
+        run: python -m py_compile scripts/*.py mcp-server/server.py
+        shell: bash
+
+      - name: Install mcp-server with full + test extras
+        run: python -m pip install -e "mcp-server[full,test]"
+        shell: bash
+
+      # Unit tests for the MCP server (integration tests stay opt-in).
+      - name: Run mcp-server pytest
+        working-directory: mcp-server
+        run: python -m pytest -q
         shell: bash
 
       # The real smoke test: generates a synthetic 5s video, runs the
@@ -70,4 +79,18 @@ jobs:
       # fields look right. Exits 0 on pass.
       - name: Run smoketest.py
         run: python scripts/smoketest.py
+        shell: bash
+
+      # Whisper weights for the audio smoke (tiny.en, ~75 MB).
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-tiny.en
+
+      # Audio smoke: 10 s generated clip with a sine track, real local
+      # transcription. Catches dependency breaks like PyAV 19 vs
+      # faster-whisper (`metadata_errors`) that --no-audio never touches.
+      - name: Run smoketest.py with audio (tiny.en)
+        run: python scripts/smoketest.py --audio-model tiny.en
         shell: bash

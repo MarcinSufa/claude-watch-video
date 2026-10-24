@@ -613,11 +613,14 @@ def main() -> int:
                          "moments to include (default 3, evenly distributed)")
     # Intelligent highlights (LLM-driven moment selection)
     ap.add_argument("--highlights-prompt", default=None,
-                    help="enable LLM-driven highlight selection. Describes what to "
-                         "look for, e.g. 'highlight only bug-related parts'. Requires "
-                         "ANTHROPIC_API_KEY. Runs highlights.py before posting; when "
-                         "summary mode posts, picks come from the LLM instead of even "
-                         "distribution.")
+                    help="optional, paid: LLM-driven highlight selection for "
+                         "headless runs (in a Claude Code session the agent picks "
+                         "moments itself). Describes what to look for, e.g. "
+                         "'highlight only bug-related parts'. Needs a transcript "
+                         "and a provider API key (ANTHROPIC_API_KEY by default); "
+                         "without them the run continues with a warning. When "
+                         "summary mode posts, picks come from the LLM instead of "
+                         "even distribution.")
     ap.add_argument("--highlights-max-n", type=int, default=None,
                     help="max number of highlights the LLM is allowed to pick (default 5)")
     ap.add_argument("--highlights-model", default=None,
@@ -771,13 +774,15 @@ def main() -> int:
              step="orchestrator",
              msg=(f"long transcribed window "
                   f"({effective_window_s:.0f}s = "
-                  f"{effective_window_s / 60:.1f} min) and no "
-                  f"--highlights-prompt set. Consider re-running with "
-                  f"--highlights-prompt for targeted questions to save "
-                  f"~15k tokens at the agent's answer step."),
+                  f"{effective_window_s / 60:.1f} min). For a targeted "
+                  f"question, grep transcript.md and read only the matching "
+                  f"paragraphs and nearby frames (~15k tokens saved), or "
+                  f"scope with --start/--end. Headless runs without a "
+                  f"Claude session can use --highlights-prompt (paid API)."),
              window_seconds=round(effective_window_s, 1),
              full_duration_seconds=round(full_duration, 1),
-             recommendation="re-run with --highlights-prompt \"<user question>\"")
+             recommendation="grep transcript.md for the question's terms; "
+                            "or --start/--end chunks")
 
     # 3. Frames --------------------------------------------------------------
     # `dedup_will_mutate` is part of the frames-step fingerprint because dedup

@@ -9,8 +9,8 @@ Give Claude eyes and ears for a video. Output: a directory of timestamped JPEG f
 
 ## Common mistakes — don't do these
 
-- **Running the full pipeline + reading the full transcript when the user asked a targeted question.** Use `--highlights-prompt "<their question>"` instead — the pipeline runs once, the agent reads only the picked moments, saves ~15k tokens at the answer step.
-- **Using `--whisper local` when a hosted key is set.** ~100× slower for no reason. Provider priority below.
+- **Reading the whole transcript and every frame for a targeted question.** Run the pipeline once, then `grep` `transcript.md` for the terms in the question and read only those paragraphs plus the frames around their timestamps. In a Claude Code session you pick the highlights yourself from frames + transcript; `--highlights-prompt` does the same through a paid LLM API and is only for headless runs (CI, scripts, MCP hosts without vision).
+- **Assuming local transcription is slow.** `--whisper local` is the default: free, offline, ~25 s cold start then ~0.1 s per second of audio on CPU. A hosted provider (`groq`, `openai`) is faster on long videos but sends audio off the machine and needs a key; use it when a key is set and the user has no privacy concern. Provider order below.
 - **Reading every stderr progress line.** Each JSON event line is for observability, not for the agent. Read the final JSON block at the bottom of stdout — that's `meta.json` and tells you exactly which files exist.
 - **Forgetting to relabel after `--whisper deepgram` / `--whisper whisperx`.** Output has anonymous `**S0**` / `**S1**` tags. If the user's prompt referenced specific people ("what did Alice say about…"), call `scripts/relabel_speakers.py` with inferred names before answering — otherwise the answer reads as *"S0 said…"* which is useless.
 - **Reaching for the video pipeline when the user asked about a SCREENSHOT.** Images and PDFs on a ticket come from `scripts/fetch_attachment.py` (MCP: `fetch_jira_attachment`), which downloads them so you can read them as files. `watch_video` only ever sees `video/*`.
@@ -23,14 +23,14 @@ Parse the user's prompt FIRST, then pick flags. Don't ask clarifying questions �
 | User's intent | Flags |
 |---|---|
 | "summarize", "transcribe", "what's in this video" | (default — full transcript, Claude reads it) |
-| Specific question ("why X", "what's the bug", "when does Y happen") | `--highlights-prompt "<their literal question>"` |
-| Video > 10 minutes AND specific question | **Mandatory** `--highlights-prompt` (token economy) |
+| Specific question ("why X", "what's the bug", "when does Y happen") | (default) — then read only the transcript paragraphs and frames that match the question |
+| Video > 10 minutes AND specific question | `--start MM:SS --end MM:SS` on the relevant part if known; otherwise default run, then grep `transcript.md` before reading frames. Headless only: `--highlights-prompt "<question>"` (paid API key) |
 | Multi-speaker (podcast / interview / meeting recording) | `--whisper deepgram` (hosted, ~$0.0043/min) OR `--whisper whisperx` (local + offline, free, needs HF token) |
-| Screen recording with on-screen text (UI bug repro, form fields, error toasts) | No flag by default — read `<workdir>/frames/*.jpg` directly with the host's image tool. Add `--ocr` only when the on-screen text needs to be grepped across many frames; it costs 1.7-2.3 s per frame plus a cold start that can reach a minute under an MCP host on Windows. |
-| Bug repro + user just asked to post analysis back | `--highlights-prompt "what is the bug" --post-to-jira` |
+| Screen recording with on-screen text (UI bug repro, form fields, error toasts) | No flag by default — read `<workdir>/frames/*.jpg` directly with the host's image tool. Add `--ocr` only when the on-screen text needs to be grepped across many frames (measured ~0.8 s per frame from the CLI; 1.7-2.3 s per frame plus a cold start of up to a minute under an MCP host on Windows). |
+| Bug repro + user just asked to post analysis back | `--post-to-jira` (add `--highlights-prompt "what is the bug"` only for a headless run with an API key) |
 | Polish / non-English / mixed content | `--lang pl` (or appropriate ISO) — auto-detect is unreliable on short clips |
 
-**Heuristic:** if the user's message ends in `?` AND names a specific thing to find out, use `--highlights-prompt`. Don't ask the user — infer.
+**Heuristic:** if the user's message ends in `?` AND names a specific thing to find out, answer it from the matching transcript paragraphs and frames rather than summarizing the whole video. Don't ask the user — infer.
 
 **Recommended order for the agent to choose `--whisper`** *(the orchestrator does NOT auto-select hosted providers from env vars — `--whisper auto` only picks `captions` for URLs with VTT subtitles, otherwise `local`. The agent inspects env vars and passes an explicit `--whisper <name>` flag.)*
 
@@ -72,7 +72,7 @@ A single orchestrator `scripts/watch_video.py` does everything. Sub-scripts can 
 
 1. **Resolve input → local path** via `fetch.py` (path / URL / Jira key / auto-downloads).
 2. **Probe** via `probe.py` (`ffprobe` + volumedetect): duration, dims, has-audio, mean_volume_db, is_silent.
-3. **Pick frame budget** by *window* duration (or full duration if no window) — see table. Hard caps: 2 fps, 100 frames.
+3. **Pick frame budget** by *window* duration (or full duration if no window) — see table. Caps: 2 fps; the automatic budget tops out at 80 frames.
 4. **Extract frames** via `frames.py` (`ffmpeg`): uniform sampling at computed fps (or scene-change if `--scene-mode`), JPEGs at 960 px wide → `<workdir>/frames/t_NNN.jpg`. Per-frame timestamps stored in `meta.json` (so non-uniform spacing works downstream). Atomic: stages to a sibling dir, renames on success.
 5. **Decide on audio.** If `is_silent` or `--no-audio` → skip transcription. Otherwise extract mono 16 kHz `audio.wav` and run `transcribe.py`.
 6. **Whisper model** picked by `--lang`:
@@ -91,11 +91,11 @@ A single orchestrator `scripts/watch_video.py` does everything. Sub-scripts can 
 
 | Duration | Frames | fps |
 |---|---|---|
-| ≤30 s | ~25 | 0.83 |
-| 30–60 s | ~25 | 0.6 |
-| 1–3 min | ~40 | 0.3 |
-| 3–10 min | ~60 | 0.15 |
-| > 10 min | ~80 sparse — warn user | auto |
+| ≤30 s | 25 | ≥0.83 |
+| 30–60 s | 30 | 0.5–1 |
+| 1–3 min | 45 | 0.25–0.75 |
+| 3–10 min | 60 | 0.1–0.33 |
+| > 10 min | 80 sparse — warn user | auto |
 
 Bump `--resolution 1280` when frames contain hard-to-read on-screen text (code, terminals, tiny UI labels).
 
@@ -229,7 +229,7 @@ First whisper run downloads the model (~250 MB for `small`/`small.en`) to `~/.ca
 
 ## Jira token setup
 
-The `--jira-key PROJ-1234` mode is fully automatic (no manual download click) **if** an Atlassian API token is configured. Setup is a one-time, ~3-minute process.
+Jira mode (`watch_video.py PROJ-1234`) is fully automatic (no manual download click) **if** an Atlassian API token is configured. Setup is a one-time, ~3-minute process.
 
 ### Step 1 — Create the token
 
@@ -378,7 +378,7 @@ The pattern is two tools used together:
 
 4. **Handle errors.** Read meta.json `warnings` and `skipped_audio_reason` even on exit 0 and tell the user what was skipped (e.g. "no transcript: faster-whisper failed, answered from frames only"). Non-zero exit codes: see Exit codes section. Auth failures (4) → tell the user to check `credentials.json`. Missing deps (3) → tell them what to install.
 
-5. **Fall back to semi-auto for Jira if no token.** If `--jira-key` exits with code `2` (BAD_INPUT) and the message mentions `credentials not found`, fall back to:
+5. **Fall back to semi-auto for Jira if no token.** If a Jira-key run (`watch_video.py PROJ-1234`) exits with code `2` (BAD_INPUT) and the message mentions `credentials not found`, fall back to:
    - Call MCP `getJiraIssue` with `fields=["attachment", "summary"]`
    - Filter attachments to `mimeType` starting with `video/`. If 0 → tell user, stop. If 1 → use it. If >1 → ask user.
    - Print the attachment's web UI URL, ask user to click-download in the browser
@@ -467,7 +467,7 @@ If you need to display progress to the user during a long run (large download, s
 | `--no-audio` | Skip transcription even if audio is present |
 | `--frames N` | Override default frame budget |
 | `--resolution W` | Frame width in px (default 960; use 1280 for dense UI text) |
-| `--whisper PROVIDER` | Transcription provider: `local` (faster-whisper, default, offline, no API key) / `groq` / `openai`. See [Whisper providers](#whisper-providers) below. |
+| `--whisper PROVIDER` | Transcription provider: `auto` (default: `captions` when yt-dlp pulled a VTT, else `local`) / `captions` / `local` (faster-whisper, offline, no API key) / `groq` / `openai` / `deepgram` / `whisperx`. See [Whisper providers](#whisper-providers) below. |
 | `--whisper-api-key KEY` | One-shot API key. **WARNING:** visible in shell history, process listings, and agent transcripts. Do not use on shared machines or recorded sessions. Prefer env var or credentials file. |
 | `--whisper-credentials PATH` | Override default credentials file path (default: `~/.watch-video/credentials.json`). |
 | `--model NAME` | Whisper model. Local: `tiny.en` / `small.en` (default for English) / `small` / `medium` / `large-v3`. Groq: `whisper-large-v3` (default) / `whisper-large-v3-turbo` / `distil-whisper-large-v3-en`. OpenAI: `whisper-1` (only option). |
@@ -485,7 +485,12 @@ If you need to display progress to the user during a long run (large download, s
 | `--no-report` | Skip both `report.md` AND `report.html` generation (saves <100ms; rarely worth it). To skip only HTML, pass `--no-html` through to `report.py` directly. |
 | `--no-cache` | Bypass per-step cache; re-run everything from scratch. |
 | `--force-step NAME[,...]` | Invalidate specific steps (and their downstream). Useful for forcing one step while keeping upstream cache. |
-| `--ocr` | Run Tesseract OCR over kept frames and write `ocr.txt`. **Best for UI bug videos** -- lets you grep on-screen text instead of re-reading every JPEG. ~0.8 s per frame. Requires Tesseract binary + pytesseract + Pillow installed. |
+| `--ocr` | Run Tesseract OCR over kept frames and write `ocr.txt`. **Best for UI bug videos** -- lets you grep on-screen text instead of re-reading every JPEG. ~0.8 s per frame from the CLI; 1.7-2.3 s per frame plus a cold start of up to a minute under an MCP host on Windows. Requires Tesseract binary + pytesseract + Pillow installed; without Tesseract the run continues with a `warnings` entry. |
+| `--highlights-prompt "..."` | Optional, paid, for headless runs. Calls an LLM API (Anthropic by default) with the transcript + prompt and writes `highlights.json`, `highlights.md`, `highlights.html`; `post_to_jira.py --style summary` then uses those picks. Needs a transcript and an API key; without either the run continues with a `warnings` entry. In a Claude Code session, pick the moments yourself instead (see [Two ways to generate highlights](#two-ways-to-generate-highlights)). |
+| `--highlights-max-n N` | Max highlights the LLM may pick (default 5). |
+| `--highlights-provider P` | `anthropic` (default) / `openai` / `groq` / `deepseek` / `gemini` / `openai-compat` (+ `--highlights-base-url`). |
+| `--highlights-model NAME` | Model id for the highlights provider (default per provider, see `scripts/highlights.py`). |
+| `--highlights-api-key KEY` / `--highlights-credentials PATH` | Key for the highlights provider; otherwise the provider's env var (`ANTHROPIC_API_KEY`, ...) or `~/.watch-video/credentials.json`. |
 | `--ocr-lang LANG` | Tesseract language code(s). `eng` (default), `pol`, `deu`, or combos like `eng+pol`. Each non-English language requires its tessdata pack installed. |
 | `--ocr-min-text-length N` | Frames with fewer than N non-whitespace OCR chars are skipped (default 10). |
 
@@ -495,7 +500,7 @@ Sub-scripts (`fetch.py`, `probe.py`, `frames.py`, `transcribe.py`) can be run in
 
 Two-tier support:
 
-- **Full auto (recommended):** Configure an Atlassian API token once (see [Jira token setup](#jira-token-setup) above). After that, `--jira-key PROJ-1234` does everything — enumerate attachments, pick the video, download. No browser, no manual click. Works because Atlassian Cloud REST API accepts personal API tokens via HTTP Basic Auth, which the skill handles via `urllib` (range requests + retries for CDN robustness on large files).
+- **Full auto (recommended):** Configure an Atlassian API token once (see [Jira token setup](#jira-token-setup) above). After that, `watch_video.py PROJ-1234` does everything — enumerate attachments, pick the video, download. No browser, no manual click. Works because Atlassian Cloud REST API accepts personal API tokens via HTTP Basic Auth, which the skill handles via `urllib` (range requests + retries for CDN robustness on large files).
 
 - **Semi-auto fallback:** If no token is configured (or the org blocks API tokens), the skill uses the Atlassian MCP (OAuth via Claude) to enumerate attachments + print the attachment URL, then asks you to click-download in the browser. `fetch.py --auto-downloads` picks the freshly downloaded MP4 up automatically. Removes the "tell me the path" and "find the attachment" steps, but the click stays.
 
@@ -503,19 +508,24 @@ Note: Atlassian Cloud disabled password-based REST API auth in 2019 — a person
 
 ## Whisper providers
 
-`watch-video` supports three transcription providers via `--whisper`:
+`watch-video` supports six transcription sources via `--whisper` (default `auto` = `captions` when a URL came with a VTT, else `local`):
 
 | Provider | Latency | Cost | Privacy | API key |
 |---|---|---|---|---|
-| `local` (default) | Cold start ~25 s (one-time model download) + ~0.1 s per second of audio. Cached after first run. | Free | Offline (audio never leaves your machine) | None |
+| `captions` | Instant (VTT subtitles yt-dlp already downloaded) | Free | Nothing sent | None (URL inputs with captions only) |
+| `local` (default for files) | Cold start ~25 s (one-time model download) + ~0.1 s per second of audio. Cached after first run. | Free | Offline (audio never leaves your machine) | None |
 | `groq` | ~1-2 s for any short clip, often faster than real time | Free tier covers ~14400 s/day; paid is very cheap | Audio sent to Groq servers (deleted per their policy) | `GROQ_API_KEY` |
 | `openai` | ~3-5 s per minute of audio | $0.006 / minute | Audio sent to OpenAI (deleted per their policy) | `OPENAI_API_KEY` |
+| `deepgram` | Hosted (Nova-3) + speaker diarization | ~$0.0043 / minute | Audio sent to Deepgram | `DEEPGRAM_API_KEY` |
+| `whisperx` | Local Whisper + pyannote.audio diarization; first run downloads ~500 MB-1 GB of weights | Free | Offline | HF token + accepted terms on three gated pyannote repos |
 
 **When to choose what:**
 
+- **`captions`** — picked automatically for URLs that come with subtitles; nothing to decide.
 - **Default `local`** — works out of the box, no setup, offline. Best for repeated runs against the same video (cache hit). Slower on cold start.
 - **`groq`** — best balance of speed and price. Use when you want fast iteration on many videos. Free tier is generous.
 - **`openai`** — choose only if you already have an OpenAI key and prefer their stack. Slower and pricier than Groq for the same task.
+- **`deepgram` / `whisperx`** — multi-speaker content; both tag paragraphs `**S0**`/`**S1**` and write `speakers.json` (see relabel step in the Procedure).
 
 ### Setting up a hosted provider (one-time, ~2 minutes)
 
@@ -648,20 +658,19 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-k
 | `--force` | Bypass the idempotency check; post even if a prior `/watch-video` comment already exists. |
 | `--no-embed-images` | Skip image embedding (`mediaSingle` ADF nodes); reference frames as italic text. Default behavior is to embed. Useful when the API token user lacks attachment permissions. |
 | `--style collapsed\|inline\|summary` | Comment layout. **Default: `collapsed`** wraps the timeline in an ADF expand panel (compact ticket UI, click to expand). `inline` shows the full timeline expanded (legacy v1.5.0 behavior, good for short bug repros). `summary` posts only N key moments and attaches `report.html` as a downloadable artifact (good for long videos / archival-heavy teams). |
-| `--summary-key-frames N` | With `--style summary`: number of key timeline moments to include in the comment (default 3, evenly distributed first/middle/last). |
-| `--highlights-prompt "..."` | Enable LLM-driven highlight selection. Describes what to look for ("highlight only bug-related parts", "find every mention of pricing"). Runs `highlights.py` which calls Claude API with the transcript + prompt and writes `highlights.json`, `highlights.md`, and `highlights.html`. When summary mode posts, picks come from the LLM instead of even distribution. Requires `ANTHROPIC_API_KEY`. |
-| `--highlights-max-n N` | Max highlights the LLM is allowed to pick (default 5). |
-| `--highlights-model NAME` | Anthropic model id (default `claude-haiku-4-5-20251001` — cheap and fast). |
+| `--summary-key-frames N` | With `--style summary`: number of key timeline moments to include in the comment (default 3, evenly distributed first/middle/last; replaced by `highlights.json` picks when that file exists). |
+| `--credentials PATH` | Override default credentials JSON location. |
+
+The `--highlights-*` flags belong to `watch_video.py` (see its flags table), not to `post_to_jira.py`.
 
 ### Two ways to generate highlights
 
 The `highlights` step picks the most relevant moments from the transcript based on a user prompt. Two invocation paths produce the same artifacts (`highlights.json` / `highlights.md` / `highlights.html`):
 
-1. **Inside Claude Code (no API key needed)** — ask Claude conversationally: *"watch PROJ-1234 then write highlights for the bug-related parts"*. Claude runs the pipeline and reads the transcript / frames in conversation to produce the highlights files directly. This path also gets multimodal vision (Claude can look at the frames), so visual prompts work too.
-2. **Automated (CI / scripted, needs API key)** — `python watch_video.py URL --highlights-prompt "..."` or standalone `python highlights.py <workdir> --prompt "..."`. Calls the Anthropic API via the SDK (default model: Haiku 4.5, ~$0.001-0.005 per video). Same JSON validator + frame-matching logic; produces the same artifact files.
+1. **Inside Claude Code (default, no API key needed)** — ask Claude conversationally: *"watch PROJ-1234 then write highlights for the bug-related parts"*. Claude runs the pipeline and reads the transcript / frames in conversation to produce the highlights files directly. This path also gets multimodal vision (Claude can look at the frames), so visual prompts work too.
+2. **Headless (CI / scripted, optional, needs a paid API key)** — `python watch_video.py URL --highlights-prompt "..."` or standalone `python highlights.py <workdir> --prompt "..."`. Calls the Anthropic API via the SDK (default model: Haiku 4.5, ~$0.001-0.005 per video). Same JSON validator + frame-matching logic; produces the same artifact files.
 
 Either way, `post_to_jira.py --style summary` automatically picks up `highlights.json` and uses those moments instead of evenly-distributed picks.
-| `--credentials PATH` | Override default credentials JSON location. |
 
 ### What gets posted
 
@@ -867,11 +876,11 @@ The smart-dedup output is the right balance for narrated UI videos. For movie-st
 
 ## Known limits
 
-- **No private platform auth.** Public URLs and local files only (Jira via the semi-automated flow). No private Loom, no internal video CDNs without manual download.
+- **No private platform auth.** Public URLs, local files and Jira (fully automatic with an API token, semi-auto download without one). No private Loom, no internal video CDNs without manual download.
 - **Long videos.** Past ~10 min, frame sampling gets sparse. Prefer `--start`/`--end` on the part you actually care about.
 - **Non-English audio.** Multilingual `small` model is good but not great. For high accuracy in non-English, use `--model medium` (~3× slower, ~2× the model size).
 - **Heavy on-screen text.** Default 960 px frames may not render small labels legibly. Bump to 1280 or 1536 when needed.
-- **`--dedup` requires transcript for full benefit.** If you pass `--no-audio` together with `--dedup`, transcript protection is unavailable -- you fall back to threshold + temporal only. Still useful, but less precise on narrated content.
+- **`--dedup` needs a transcript.** With `--no-audio`, a silent track or a failed transcription, dedup is skipped (a `warnings` entry says so) because only the temporal floor would protect frames. Bound the budget with `--frames N` instead.
 
 ## Comparable plugins on the marketplace (for reference)
 

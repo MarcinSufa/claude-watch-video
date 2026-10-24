@@ -14,7 +14,7 @@ Always emits per-frame timestamps in the JSON output so downstream tools
 non-uniformly spaced.
 
 Usage:
-    python frames.py <video> <workdir> [--frames N] [--resolution W]
+    python3 frames.py <video> <workdir> [--frames N] [--resolution W]
                                        [--start MM:SS] [--end MM:SS]
                                        [--scene-mode] [--scene-threshold 0.3]
                                        [--dedup] [--dedup-threshold 5]

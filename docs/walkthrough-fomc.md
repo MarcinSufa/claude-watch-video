@@ -5,8 +5,8 @@ A real end-to-end run, not a hypothetical. The skill is run against the [Federal
 ## The command
 
 ```bash
-python scripts/watch_video.py "https://www.youtube.com/watch?v=SVrdJINZGIM" \
-  --workdir c:\tmp\fomc-demo --dedup --verbose
+python3 scripts/watch_video.py "https://www.youtube.com/watch?v=SVrdJINZGIM" \
+  --workdir /tmp/fomc-demo --dedup --verbose
 ```
 
 Then ran `highlights.py` against the prompt **"summarize the rate decision, inflation outlook, and rate-path forecast"** to pick the 5 most relevant moments.
@@ -14,7 +14,7 @@ Then ran `highlights.py` against the prompt **"summarize the rate decision, infl
 ## What landed on disk
 
 ```
-c:\tmp\fomc-demo\
+/tmp/fomc-demo/
 ├── FOMC_Introductory_Statement_March_18_2026.mp4   13.8 MB  (329.7s, 640×360)
 ├── audio.wav                                       10.5 MB  (mono, 16 kHz, mean -23.4 dB)
 ├── frames/                                         60 JPEGs (3.1 MB total)

@@ -5,8 +5,8 @@ A 54-second product-release video that you'd otherwise need to actually watch to
 ## The command
 
 ```bash
-python scripts/watch_video.py "https://www.youtube.com/watch?v=O664gH_szoY" \
-  --workdir c:\tmp\claude-features-demo --dedup --verbose
+python3 scripts/watch_video.py "https://www.youtube.com/watch?v=O664gH_szoY" \
+  --workdir /tmp/claude-features-demo --dedup --verbose
 ```
 
 Then `highlights.py` against the prompt above.
@@ -14,7 +14,7 @@ Then `highlights.py` against the prompt above.
 ## What landed on disk
 
 ```
-c:\tmp\claude-features-demo\
+/tmp/claude-features-demo/
 ├── Claude_Code_v2.1.142_Full_Control_Over_Background_Agents.mp4   1.0 MB
 ├── audio.wav                                                       1.7 MB
 ├── frames/                                                         14 JPEGs
@@ -153,7 +153,7 @@ Half a minute to know whether a release video changes anything about how you wor
 The same `watch_video.py` accepts a Jira issue key directly:
 
 ```bash
-python scripts/watch_video.py PROJ-2145 --dedup --ocr \
+python3 scripts/watch_video.py PROJ-2145 --dedup --ocr \
   --highlights-prompt "what is the actual bug and at what moment does it occur" \
   --post-to-jira
 ```

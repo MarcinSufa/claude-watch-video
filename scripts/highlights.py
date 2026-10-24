@@ -18,8 +18,8 @@ API key resolution (Anthropic):
 Cost on default model (Haiku 4.5): ~$0.001-0.005 per video transcript.
 
 Usage:
-    python highlights.py <workdir> --prompt "highlight only bug-related moments"
-    python highlights.py <workdir> --prompt "..." --max-n 8 --model claude-sonnet-4-6
+    python3 highlights.py <workdir> --prompt "highlight only bug-related moments"
+    python3 highlights.py <workdir> --prompt "..." --max-n 8 --model claude-sonnet-4-6
 """
 from __future__ import annotations
 
@@ -38,7 +38,9 @@ from _common import (ExitCode, PARA_TS_RE, atomic_path, die, emit,  # noqa: E402
 
 DEFAULT_PROVIDER = "anthropic"
 PROVIDER_DEFAULT_MODEL = {
-    "anthropic":     "claude-haiku-4-5-20251001",
+    # Alias, not a dated snapshot id: it follows the current Haiku 4.5
+    # snapshot, so the default does not go stale when a snapshot retires.
+    "anthropic":     "claude-haiku-4-5",
     "openai":        "gpt-4o-mini",
     "groq":          "llama-3.1-70b-versatile",
     "deepseek":      "deepseek-chat",       # also: deepseek-reasoner, deepseek-coder
@@ -120,7 +122,10 @@ def _load_api_key(provider: str, explicit: str | None, creds_path: Path) -> str:
         f"No {provider} API key found. Set one of:\n"
         f"  - env var {env_var}\n"
         f"  - '{creds_field}' field in {creds_path}\n"
-        "  - --anthropic-api-key flag (one-shot, not persisted)",
+        "  - --highlights-api-key on watch_video.py (--anthropic-api-key when "
+        "calling highlights.py directly; one-shot, not persisted)\n"
+        "Highlights are optional: in a Claude Code session the agent picks "
+        "the moments from frames + transcript without any key.",
         provider=provider,
         env_var=env_var,
         creds_path=str(creds_path),

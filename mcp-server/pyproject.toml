@@ -18,8 +18,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    # Required: MCP server framework
-    "mcp>=1.0.0",
+    # Required: MCP server framework. mcp 2.x renamed FastMCP (no
+    # `mcp.server.fastmcp`), so the server cannot import against it.
+    "mcp>=1,<2",
 ]
 
 [project.optional-dependencies]
@@ -29,12 +30,23 @@ dependencies = [
 full = [
     "yt-dlp>=2024.1.0",
     "faster-whisper>=1.0.0",
+    # faster-whisper 1.2.x passes `metadata_errors=` to av.open(); PyAV 19
+    # dropped that argument and every local transcription dies with a
+    # TypeError. av 16-18 accept it.
+    "av<19",
     "Pillow>=10.0",
     "imagehash>=4.3.0",
     "pytesseract>=0.3.10",
     "python-docx>=1.0.0",
     "anthropic>=0.18.0",
     "openai>=1.0.0",
+]
+# Test runner deps: `pip install -e '.[full,test]'` then `python3 -m pytest`.
+# The async tests need pytest-asyncio; the dedup tests build frames with Pillow.
+test = [
+    "pytest>=7",
+    "pytest-asyncio>=0.21",
+    "Pillow>=10.0",
 ]
 
 [project.urls]

@@ -288,7 +288,7 @@ Anyone can reproduce these numbers:
 git clone https://github.com/MarcinSufa/claude-watch-video ~/.claude/skills/watch-video
 
 # Run on the same video
-python ~/.claude/skills/watch-video/scripts/watch_video.py \
+python3 ~/.claude/skills/watch-video/scripts/watch_video.py \
   "https://www.youtube.com/watch?v=55pTFVoclvE" \
   --workdir /tmp/atlassian-eng --dedup --verbose
 

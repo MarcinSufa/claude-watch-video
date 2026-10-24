@@ -3,7 +3,7 @@
 Replaces probe.ps1. Cross-platform (Mac/Linux/Win).
 
 Usage:
-    python probe.py <video-path>
+    python3 probe.py <video-path>
 
 Stdout: single JSON object with duration, dimensions, codecs, audio-volume info, is_silent.
 Stderr: structured JSON events.

@@ -16,7 +16,7 @@ Tesseract is detected in this order:
   4. die() with MISSING_DEP if none found
 
 Usage:
-    python ocr.py <workdir> [--lang eng] [--min-text-length 10]
+    python3 ocr.py <workdir> [--lang eng] [--min-text-length 10]
 
 Stdout: single JSON object: { frames_with_text, frames_total, ocr_path, language }
 Stderr: structured events.
@@ -52,9 +52,9 @@ def find_tesseract() -> str | None:
             return candidate
     die(ExitCode.MISSING_DEP,
         "Tesseract not found. Install it first.\n"
-        "  Windows: winget install UB-Mannheim.TesseractOCR\n"
+        "  Linux:   sudo apt install tesseract-ocr  (or dnf/pacman equivalent)\n"
         "  macOS:   brew install tesseract\n"
-        "  Linux:   apt install tesseract-ocr  (or dnf/pacman equivalent)\n"
+        "  Windows: winget install UB-Mannheim.TesseractOCR\n"
         "Also: pip install --user pytesseract Pillow",
         dependency="tesseract")
 

@@ -14,7 +14,7 @@ Safety stack:
   5. Read-only fallback: any HTTP non-201 -> exit non-zero, no retries.
 
 Usage:
-    python post_to_jira.py <workdir> [--jira-key PROJ-X] [--dry-run]
+    python3 post_to_jira.py <workdir> [--jira-key PROJ-X] [--dry-run]
                                      [--yes] [--force]
                                      [--credentials PATH]
 
@@ -58,7 +58,7 @@ def _load_creds(path: Path) -> dict:
         die(ExitCode.BAD_INPUT,
             f"Atlassian credentials not found at {path}",
             credentials_path=str(path),
-            hint="See SKILL.md -> Jira token setup")
+            hint="See references/jira.md -> Jira token setup")
     return json.loads(path.read_text(encoding="utf-8"))
 
 

@@ -37,13 +37,13 @@ That's one card from a real `highlights.md` rendered inline. The pipeline also p
 
 Then ask Claude: *"Watch https://youtu.be/… and tell me what's in it."* or *"Watch PROJ-1234 and identify the bug."*
 
-Works on every Claude Code surface — CLI, IDE extensions, desktop. The plugin auto-installs the same underlying skill (see [`SKILL.md`](SKILL.md) for the manual install path if you prefer to clone into `~/.claude/skills/` directly).
+Works on every Claude Code surface — CLI, IDE extensions, desktop. The plugin auto-installs the same underlying skill. To install it by hand instead, clone the repo to `~/.claude/skills/watch-video/`: [`SKILL.md`](SKILL.md) sits at the repo root and finds its scripts through `${CLAUDE_SKILL_DIR}` either way.
 
 ### CLI direct (CI / scripting / power users)
 
 ```bash
 git clone https://github.com/MarcinSufa/claude-watch-video.git
-python claude-watch-video/scripts/watch_video.py "<url>" --workdir /tmp/test --dedup --verbose
+python3 claude-watch-video/scripts/watch_video.py "<url>" --workdir /tmp/test --dedup --verbose
 ```
 
 Zero-host, zero-MCP, fastest path on any platform. Produces `transcript.md`, `frames/`, `report.md` / `.html` / `.docx`. Good for CI pipelines, batch processing, or driving the analysis yourself.
@@ -54,7 +54,7 @@ An MCP server install is available — full instructions in [`mcp-server/README.
 
 > ⚠️ **Honest warning:** on Windows + Claude Desktop the first run is **slow (~2-3 minutes)** because Windows Defender scans the freshly-spawned Python subprocess. The Claude Code plugin path above bypasses that entirely, and the CLI bypasses MCP entirely. **If you have the choice, use one of those.** The MCP path exists for environments where neither is an option.
 
-> **Codex CLI / Agent Skills note:** OpenAI's [openai/skills](https://github.com/openai/skills) framework presents skills as portable Agent Skills, but the install mechanism is still evolving. For Codex CLI today, **the CLI direct path above works without any agent-side install** (just `python scripts/watch_video.py ...` from your shell). If you specifically need MCP integration, the MCP path is available; if a future Codex skill-installer convention lands, this README will be updated.
+> **Codex CLI / Agent Skills note:** OpenAI's [openai/skills](https://github.com/openai/skills) framework presents skills as portable Agent Skills, but the install mechanism is still evolving. For Codex CLI today, **the CLI direct path above works without any agent-side install** (just `python3 scripts/watch_video.py ...` from your shell). If you specifically need MCP integration, the MCP path is available; if a future Codex skill-installer convention lands, this README will be updated.
 
 ### Prerequisites (any path)
 
@@ -64,19 +64,21 @@ Install ffmpeg per platform:
 
 | OS | Command |
 |---|---|
-| Windows | `winget install Gyan.FFmpeg` |
-| macOS | `brew install ffmpeg` |
 | Linux (Debian/Ubuntu) | `sudo apt install ffmpeg` |
 | Linux (Fedora/RHEL) | `sudo dnf install ffmpeg` |
+| macOS | `brew install ffmpeg` |
+| Windows | `winget install Gyan.FFmpeg` |
+
+Commands below use `python3`. On Windows use `py` (or `python` if it is a real interpreter, not the Microsoft Store alias).
 
 Optional (unlock features as you need them):
 
 | Adds | Install |
 |---|---|
 | URL mode (YouTube, Loom, …) | `pip install --user yt-dlp` |
-| Local transcription (`--whisper local`) | `pip install --user faster-whisper` |
+| Local transcription (`--whisper local`) | `pip install --user faster-whisper 'av<19'` (PyAV 19 breaks faster-whisper 1.2.x: `TypeError ... 'metadata_errors'`) |
 | Smart dedup (`--dedup`) | `pip install --user Pillow imagehash` |
-| OCR (`--ocr`) | `pip install --user pytesseract Pillow` + Tesseract binary ([SKILL.md → OCR setup](SKILL.md#on-screen-text-search-with---ocr)) |
+| OCR (`--ocr`) | `pip install --user pytesseract Pillow` + Tesseract binary ([references/setup.md](references/setup.md), [OCR notes](references/ocr-dedup.md#on-screen-text-search-with---ocr)) |
 | Hosted Whisper (Groq/OpenAI/Deepgram) | API key — env var or `~/.watch-video/credentials.json` |
 | **Local diarization (`--whisper whisperx`)** | `pip install pyannote.audio` (the underlying lib; ~500 MB-1 GB of model weights cached on first run) + HF token (`HF_TOKEN` env or `hf_token` in credentials.json) + accept terms at **three** gated repos: [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1), [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0), and [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) |
 | LLM highlights (`--highlights-prompt`) | Anthropic/OpenAI/Groq/DeepSeek/Gemini API key |
@@ -177,8 +179,8 @@ Two real runs with all artifacts and timings captured verbatim — separate docs
 
 ## Use cases
 
-- **Bug triage from Jira screen recordings** — `python scripts/watch_video.py PROJ-1234 --dedup --ocr` gives you the transcript + key frames + on-screen text in under a minute. Add `--post-to-jira` to attach the analysis back to the ticket
-- **Sprint retro on bug videos** — `python scripts/watch_batch.py --jira-jql "project = PROJ AND labels = video-bug AND created >= -7d"` processes a week's videos at once
+- **Bug triage from Jira screen recordings** — `python3 scripts/watch_video.py PROJ-1234 --dedup --ocr` gives you the transcript + key frames + on-screen text in under a minute. Add `--post-to-jira` to attach the analysis back to the ticket
+- **Sprint retro on bug videos** — `python3 scripts/watch_batch.py --jira-jql "project = PROJ AND labels = video-bug AND created >= -7d"` processes a week's videos at once
 - **Researching public content** — point at any YouTube/Loom URL; captions-first means free + sub-5-second on most YouTube videos
 - **Podcast / multi-speaker transcription** — `--whisper deepgram` gives anonymous speaker labels (`S0`, `S1`) and a `speakers.json` summary you can later relabel with real names
 - **Compliance / privacy-first** — default `--whisper local` runs entirely on your machine; nothing is uploaded
@@ -190,41 +192,41 @@ Two real runs with all artifacts and timings captured verbatim — separate docs
 
 ```bash
 # Most common: full-auto Jira workflow
-python scripts/watch_video.py PROJ-1234 --dedup --ocr
+python3 scripts/watch_video.py PROJ-1234 --dedup --ocr
 
 # YouTube clip with bumped resolution for tiny on-screen text
-python scripts/watch_video.py "https://youtu.be/abc" --resolution 1280
+python3 scripts/watch_video.py "https://youtu.be/abc" --resolution 1280
 
 # Scope to a 10-second window of a long video
-python scripts/watch_video.py PROJ-1234 --start 0:30 --end 0:40
+python3 scripts/watch_video.py PROJ-1234 --start 0:30 --end 0:40
 
 # Fast cold-start with hosted Whisper
-python scripts/watch_video.py PROJ-1234 --whisper groq
+python3 scripts/watch_video.py PROJ-1234 --whisper groq
 
 # Multi-speaker podcast with hosted diarization (Deepgram; ~$0.0043/min)
-python scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper deepgram
+python3 scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper deepgram
 
 # Same, but local + offline (WhisperX recipe; free; ~1 GB first-run model download)
 # Implemented via faster-whisper + pyannote.audio directly (no whisperx package
 # wrapper, which has stale dep pins broken on Python 3.14). Requires HF token
-# + accepting terms on three gated pyannote models. See SKILL.md.
-python scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper whisperx
+# + accepting terms on three gated pyannote models. See references/whisper-providers.md.
+python3 scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper whisperx
 
 # Relabel anonymous speakers with real names (v2.3.1+; works for both providers)
 # Read speakers.json first to see who said what; then:
-python scripts/relabel_speakers.py /tmp/watch-joe-vs-naval \
+python3 scripts/relabel_speakers.py /tmp/watch-joe-vs-naval \
   --names "S0=Joe Rogan,S1=Naval Ravikant"
 # transcript.md and report.md/.html/.docx are atomically rewritten in place.
 
 # LLM-driven highlight selection (default model is Claude Haiku 4.5)
-python scripts/watch_video.py PROJ-1234 \
+python3 scripts/watch_video.py PROJ-1234 \
   --highlights-prompt "highlight only bug-related parts"
 
 # Post analysis back to the ticket (opt-in, confirmation prompt)
-python scripts/watch_video.py PROJ-1234 --dedup --ocr --post-to-jira
+python3 scripts/watch_video.py PROJ-1234 --dedup --ocr --post-to-jira
 
 # Bulk: process a sprint's worth of bug tickets
-python scripts/watch_batch.py \
+python3 scripts/watch_batch.py \
   --jira-jql "project = PROJ AND labels = video-bug AND created >= -7d" \
   --dedup --ocr
 ```
@@ -265,7 +267,7 @@ scripts/                  ← canonical implementation
 mcp-server/server.py      ← thin async wrapper over the CLI scripts
 ```
 
-Each step writes to disk atomically (staged then `os.replace`'d). Per-step fingerprint cache; re-run with a tweaked flag and only the affected tail executes. Workdir is a contract — every artifact has a known filename and shape ([SKILL.md → file layout](SKILL.md)).
+Each step writes to disk atomically (staged then `os.replace`'d). Per-step fingerprint cache; re-run with a tweaked flag and only the affected tail executes. Workdir is a contract — every artifact has a known filename and shape ([references/meta-schema.md → file layout](references/meta-schema.md#workspace)).
 
 ---
 

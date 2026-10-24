@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import sys
 import tempfile
 import uuid
@@ -36,7 +37,9 @@ from typing import Any
 # _default_workdir when the caller doesn't specify a workdir. Picking a
 # platform-appropriate root matters because Path(r"C:\tmp") is a *relative*
 # path on POSIX -- a literal C:\tmp under the server's CWD -- not /tmp.
-DEFAULT_WORKDIR_ROOT = Path("c:/tmp") if sys.platform == "win32" else Path("/tmp")
+# POSIX: honor $TMPDIR (macOS sets a per-user one), else /tmp.
+DEFAULT_WORKDIR_ROOT = (Path("c:/tmp") if sys.platform == "win32"
+                        else Path(os.environ.get("TMPDIR") or "/tmp"))
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -63,6 +66,33 @@ SCRIPTS_DIR = _resolve_scripts_dir()
 
 
 # ---- Subprocess helper (injection-safe: argv list, no shell) -------------
+
+# POSIX: every child starts its own session (= its own process group), so a
+# cancel can kill the whole tree -- the orchestrator plus the ffmpeg,
+# tesseract and whisper grandchildren it spawned. proc.kill() alone signals
+# only the direct child, and a leftover grandchild kept writing frames/ and
+# the step logs while a retry started a second run in the same workdir.
+# Windows keeps proc.kill() (TerminateProcess on the direct child); a job
+# object / `taskkill /F /T` there is still open, see ROADMAP.
+_OWN_PROCESS_GROUP = sys.platform != "win32"
+
+
+def _kill_tree(proc) -> None:
+    """Kill a child started by this module and, on POSIX, its descendants.
+
+    Falls back to proc.kill() when the group is already gone or the handle
+    carries no pid. Raises what proc.kill() raises (ProcessLookupError) so
+    callers keep their existing handling."""
+    pid = getattr(proc, "pid", None)
+    if _OWN_PROCESS_GROUP and isinstance(pid, int) and pid > 0:
+        try:
+            # start_new_session made the child a group leader: pgid == pid.
+            os.killpg(pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    proc.kill()
+
 
 async def _spawn_script(
     script: str,
@@ -107,6 +137,7 @@ async def _spawn_script(
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=out_f,
                 stderr=err_f,
+                start_new_session=_OWN_PROCESS_GROUP,
             )
             try:
                 rc = await proc.wait()
@@ -120,11 +151,11 @@ async def _spawn_script(
                 # Not awaited: an await inside a cancelled task is not
                 # guaranteed to resume, and waiting here hung the
                 # cancellation itself in the first version of this code. The
-                # cost is that the exit status is never reaped here, and a
-                # kill only signals the direct child, not its grandchildren
-                # (ffmpeg, tesseract) -- see ROADMAP.
+                # cost is that the exit status is never reaped here. On
+                # POSIX _kill_tree takes the grandchildren (ffmpeg,
+                # tesseract) down too; on Windows only the direct child.
                 if proc.returncode is None:
-                    proc.kill()
+                    _kill_tree(proc)
                 raise
         return (
             rc if rc is not None else -1,
@@ -312,6 +343,18 @@ def _failure_payload(rc: int, stdout_text: str, stderr_tail: str) -> dict:
         parsed = json.loads(_extract_final_json(stdout_text))
     except json.JSONDecodeError:
         return payload
+    if isinstance(parsed, dict) and "schema_version" in parsed:
+        # Frames existed when the run failed: watch_video.py printed the
+        # partial meta.json. Hand it over so the agent can still answer
+        # from the frames, and say which step broke.
+        payload["meta"] = parsed
+        err = parsed.get("error") or {}
+        if err.get("msg"):
+            payload["error"] = (
+                f"watch_video.py exited with code {rc} in step "
+                f"{err.get('step') or 'unknown'}: {err['msg']}. Frames and "
+                f"partial meta are in meta.workdir.")
+        return payload
     if isinstance(parsed, dict) and parsed.get("ambiguous"):
         payload["ambiguous"] = parsed
         payload["error"] = (
@@ -365,6 +408,12 @@ def _build_pipeline_args(
     end: str | None,
     no_html: bool,
     no_docx: bool,
+    *,
+    lang: str | None = None,
+    model: str | None = None,
+    resolution: int | None = None,
+    no_audio: bool = False,
+    highlights_prompt: str | None = None,
 ) -> list[str]:
     """Build watch_video.py's argv tail. Shared by watch_video and
     watch_video_start so the two tools can't drift on flag handling."""
@@ -387,6 +436,16 @@ def _build_pipeline_args(
         args.append("--no-html")
     if no_docx:
         args.append("--no-docx")
+    if no_audio:
+        args.append("--no-audio")
+    if model:
+        args += ["--model", model]
+    if lang:
+        args += ["--lang", lang]
+    if resolution is not None:
+        args += ["--resolution", str(resolution)]
+    if highlights_prompt:
+        args += ["--highlights-prompt", highlights_prompt]
     return args
 
 
@@ -515,6 +574,9 @@ async def _run_pipeline_and_update_status(
             stdout=out_f,
             stderr=err_f,
             env=child_env,
+            # Own process group on POSIX so a cancel kills the whole tree
+            # (see _kill_tree), not just the orchestrator.
+            start_new_session=_OWN_PROCESS_GROUP,
             # No PIPE anywhere in the tree -> no buffer to fill -> no
             # blocked writes at any layer.
         )
@@ -574,11 +636,12 @@ async def _run_pipeline_and_update_status(
         #
         # Cancelling this task does NOT touch the child process -- proc.wait()
         # just stops being awaited, the subprocess keeps running and keeps
-        # writing artifacts into workdir, and a retry races it. Kill it first.
+        # writing artifacts into workdir, and a retry races it. Kill it (and
+        # on POSIX its ffmpeg/whisper/tesseract grandchildren) first.
         killed = False
         if proc is not None and proc.returncode is None:
             try:
-                proc.kill()
+                _kill_tree(proc)
                 killed = True
             except (ProcessLookupError, OSError):
                 pass
@@ -620,13 +683,18 @@ async def watch_video(
     workdir: str | None = None,
     attachment_id: str | None = None,
     frames: int | None = None,
-    dedup: bool = True,
+    dedup: bool = False,
     ocr: bool = False,
     whisper: str = "auto",
     start: str | None = None,
     end: str | None = None,
     no_html: bool = False,
     no_docx: bool = False,
+    lang: str | None = None,
+    model: str | None = None,
+    resolution: int | None = None,
+    no_audio: bool = False,
+    highlights_prompt: str | None = None,
     ctx: Context | None = None,
 ) -> str:
     """Run the watch-video pipeline on an input and block until it finishes.
@@ -645,8 +713,9 @@ async def watch_video(
         input_ref: A local path, a public URL (YouTube, Loom, etc.), a Jira
             issue key like 'PROJ-1234', or the literal 'auto' to grab the
             newest video from ~/Downloads.
-        workdir: Output directory. If omitted, the pipeline picks a default
-            under c:\\tmp\\watch-<slug>\\ (Windows) or equivalent.
+        workdir: Output directory. If omitted, defaults to
+            '$TMPDIR/watch-<slug>' (or '/tmp/watch-<slug>') on Linux/macOS and
+            'C:\\tmp\\watch-<slug>' on Windows.
         attachment_id: Jira mode only. Which video to take when the issue
             carries more than one; without it such a run stops and reports
             the candidates. Ids come from that report, or from an earlier
@@ -655,19 +724,35 @@ async def watch_video(
             the pipeline size the budget from the duration. This is the knob
             for a silent recording, where dedup does not run.
         dedup: Run smart perceptual-hash dedup with transcript-aware
-            protection. Default true. Automatically skipped on a run with no
-            transcript (silent or no-audio video), where it would drop the
+            protection. Default false, same as the CLI's opt-in --dedup.
+            Automatically skipped (with a warning in meta.json) on a run with
+            no transcript (silent or no-audio video), where it would drop the
             small UI changes a screen recording exists to show.
-        ocr: Run Tesseract OCR on kept frames. Default false. Costs 1.7-2.3 s
-            per frame plus a cold start; for a silent UI recording, reading
-            frames/ directly is faster.
+        ocr: Run Tesseract OCR on kept frames. Default false. Measured at
+            1.7-2.3 s per frame plus a cold start through MCP on Windows
+            (~0.8 s per frame from the CLI); for a silent UI recording,
+            reading frames/ directly is faster. Without Tesseract the run
+            still finishes, with a warning in meta.json.
         whisper: Transcription source. 'auto' (default) prefers VTT captions
             when yt-dlp pulled one (free, fast), else local faster-whisper.
-            Other values: 'captions', 'local', 'groq', 'openai'.
+            Other values: 'captions', 'local', 'groq', 'openai', 'deepgram',
+            'whisperx'. The hosted ones need their API key.
         start: Optional window start, e.g. '2:30'.
         end: Optional window end, e.g. '3:00'.
         no_html: Skip report.html.
         no_docx: Skip report.docx.
+        lang: Spoken language as an ISO code ('en', 'pl') or 'auto'. Omit
+            to let the provider detect it.
+        model: Whisper model id, provider-specific (e.g. 'tiny.en', 'base',
+            'small' for local faster-whisper). Omit for the provider default.
+        resolution: Frame width in px (CLI default 960). Larger frames cost
+            more tokens to read.
+        no_audio: Skip audio and transcription entirely (frames only).
+        highlights_prompt: Headless runs only: ask the highlights step
+            (paid Anthropic API, needs a key) to pick moments for this
+            prompt. Inside a Claude session, pick the moments yourself from
+            the transcript instead. Ignored, with a warning, when there is no
+            transcript (no_audio or a silent video).
 
     Returns:
         JSON string with the meta.json contents (workdir path, video meta,
@@ -695,7 +780,9 @@ async def watch_video(
     else:
         args = _build_pipeline_args(
             input_ref, job_id, attachment_id, frames, dedup, ocr, whisper,
-            start, end, no_html, no_docx)
+            start, end, no_html, no_docx, lang=lang, model=model,
+            resolution=resolution, no_audio=no_audio,
+            highlights_prompt=highlights_prompt)
         _prepare_run_logs(job_id)
         _write_status(job_id, {
             "state": "running",
@@ -727,13 +814,18 @@ async def watch_video_start(
     workdir: str | None = None,
     attachment_id: str | None = None,
     frames: int | None = None,
-    dedup: bool = True,
+    dedup: bool = False,
     ocr: bool = False,
     whisper: str = "auto",
     start: str | None = None,
     end: str | None = None,
     no_html: bool = False,
     no_docx: bool = False,
+    lang: str | None = None,
+    model: str | None = None,
+    resolution: int | None = None,
+    no_audio: bool = False,
+    highlights_prompt: str | None = None,
 ) -> str:
     """Start the watch-video pipeline as a background job. Returns immediately
     with a job_id; poll watch_video_status to track completion.
@@ -751,8 +843,8 @@ async def watch_video_start(
             issue key like 'PROJ-1234', or the literal 'auto' to grab the
             newest video from ~/Downloads.
         workdir: Output directory. If omitted, defaults to
-            'C:\\tmp\\watch-<slug>' on Windows or '/tmp/watch-<slug>' on
-            POSIX, where <slug> is derived from input_ref (YouTube video id
+            'C:\\tmp\\watch-<slug>' on Windows or '$TMPDIR/watch-<slug>'
+            ('/tmp/watch-<slug>' when TMPDIR is unset) on POSIX, where <slug> is derived from input_ref (YouTube video id
             when present, else last path segment, plus attachment_id in Jira
             mode).
         attachment_id: Jira mode only. Which video to take when the issue
@@ -760,8 +852,9 @@ async def watch_video_start(
             state='failed' with an 'ambiguous' block listing every candidate
             (id, filename, size, created, author): ask which one, then start
             again passing its id. Ids also come from getJiraIssue.
-        frames, dedup, ocr, whisper, start, end, no_html, no_docx: same as
-            watch_video.
+        frames, dedup, ocr, whisper, start, end, no_html, no_docx, lang,
+            model, resolution, no_audio, highlights_prompt: same as
+            watch_video (dedup is off unless asked for, like the CLI).
 
     Returns:
         JSON string {"job_id": "<workdir-path>", "state": "running",
@@ -792,7 +885,9 @@ async def watch_video_start(
     # Build args for the CLI subprocess.
     args = _build_pipeline_args(
         input_ref, job_id, attachment_id, frames, dedup, ocr, whisper,
-        start, end, no_html, no_docx)
+        start, end, no_html, no_docx, lang=lang, model=model,
+        resolution=resolution, no_audio=no_audio,
+        highlights_prompt=highlights_prompt)
 
     # Write the initial "running" status BEFORE launching the background task,
     # so an immediate status poll always sees something. server_pid lets a

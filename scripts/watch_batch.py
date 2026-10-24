@@ -14,9 +14,9 @@ This script does NOT post anything to Jira. It only reads issue metadata
 (via the same credentials watch_video.py uses) and writes local artifacts.
 
 Usage:
-    python watch_batch.py --jira-keys PROJ-1234,PROJ-1235,PROJ-1236 --dedup --ocr
-    python watch_batch.py --jira-jql "project=PROJ AND labels=video-bug AND created >= -7d"
-    python watch_batch.py --inputs "C:/a.mp4,https://youtu.be/abc,PROJ-1234"
+    python3 watch_batch.py --jira-keys PROJ-1234,PROJ-1235,PROJ-1236 --dedup --ocr
+    python3 watch_batch.py --jira-jql "project=PROJ AND labels=video-bug AND created >= -7d"
+    python3 watch_batch.py --inputs "/data/a.mp4,https://youtu.be/abc,PROJ-1234"
 
 Any flag not consumed here (--dedup, --ocr, --whisper, --start, --end,
 --resolution, --frames, --lang, --model, etc.) is forwarded to each
@@ -47,7 +47,9 @@ from _common import ExitCode, atomic_path, die, emit, finalize  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).parent
 WATCH_VIDEO = SCRIPTS_DIR / "watch_video.py"
-DEFAULT_BATCH_ROOT = Path("c:/tmp") if sys.platform == "win32" else Path("/tmp")
+# POSIX: honor $TMPDIR (macOS sets a per-user one), else /tmp.
+DEFAULT_BATCH_ROOT = (Path("c:/tmp") if sys.platform == "win32"
+                      else Path(os.environ.get("TMPDIR") or "/tmp"))
 DEFAULT_CREDS_PATH = Path.home() / ".atlassian-token" / "credentials.json"
 
 JIRA_KEY_RE = re.compile(r"^[A-Z]{2,10}-\d+$")
@@ -61,7 +63,7 @@ def _load_creds(creds_path: Path) -> dict:
         die(ExitCode.BAD_INPUT,
             f"Atlassian credentials not found at {creds_path}",
             credentials_path=str(creds_path),
-            hint="See SKILL.md -> Jira token setup")
+            hint="See references/jira.md -> Jira token setup")
     return json.loads(creds_path.read_text(encoding="utf-8"))
 
 
@@ -177,6 +179,16 @@ def run_one(raw: str, batch_dir: Path, forwarded_args: list[str],
         item["hint"] = "re-run individually with --attachment-id <ID>"
     else:
         item["status"] = "failed"
+        # Once frames exist, watch_video.py prints the partial meta.json even
+        # on failure; keep a pointer to it so the frames are not lost.
+        try:
+            partial = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            partial = None
+        if isinstance(partial, dict) and partial.get("error"):
+            item["meta_path"] = str(workdir / "meta.json")
+            item["summary"] = _short_summary(partial)
+            item["error"] = partial["error"].get("msg")
         # Try to extract error event from stderr tail
         for line in reversed(proc.stderr.splitlines()):
             try:
@@ -213,6 +225,10 @@ def _short_summary(meta: dict) -> dict:
     ocr = meta.get("ocr") or {}
     if ocr:
         out["ocr_frames_with_text"] = ocr.get("frames_with_text")
+    if meta.get("skipped_audio_reason"):
+        out["skipped_audio_reason"] = meta["skipped_audio_reason"]
+    if meta.get("warnings"):
+        out["warnings"] = [f"{w.get('step')}: {w.get('msg')}" for w in meta["warnings"]]
     return out
 
 

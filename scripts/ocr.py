@@ -16,7 +16,7 @@ Tesseract is detected in this order:
   4. die() with MISSING_DEP if none found
 
 Usage:
-    python ocr.py <workdir> [--lang eng] [--min-text-length 10]
+    python3 ocr.py <workdir> [--lang eng] [--min-text-length 10]
 
 Stdout: single JSON object: { frames_with_text, frames_total, ocr_path, language }
 Stderr: structured events.

@@ -47,7 +47,7 @@ Parse the user's prompt FIRST, then pick flags. Don't ask clarifying questions �
 
 | Mode | Input | What happens |
 |---|---|---|
-| **Local file** | `c:\path\video.mp4` | Used in place — no copy |
+| **Local file** | `/path/to/video.mp4` | Used in place — no copy |
 | **Public URL** | `https://youtu.be/...`, Loom, Vimeo, TikTok, X, ~1500 others | `yt-dlp` downloads into workdir |
 | **Jira (full auto)** | `PROJ-1234` or full Jira issue URL — **requires API token configured** (see [Jira token setup](#jira-token-setup) below) | Skill reads token from `credentials.json`, enumerates video attachments via Atlassian REST API, range-downloads the MP4 directly into the workdir. Zero manual steps. |
 | **Jira attachments that are not video** | `PROJ-1234` + a request about screenshots / a PDF | `scripts/fetch_attachment.py PROJ-1234` downloads them to `<tmp>/jira-<KEY>/` and prints the paths; read those files directly. Not the video pipeline. |
@@ -101,11 +101,11 @@ Bump `--resolution 1280` when frames contain hard-to-read on-screen text (code, 
 
 ## Workspace
 
-Default workdir: `c:\tmp\watch-<slug>\` where `<slug>` is derived from the input (Jira key → `con-8970`; local path → filename stem; URL → last URL segment). Override with `--workdir`.
+Default workdir: `${TMPDIR:-/tmp}/watch-<slug>/` (Windows: `c:\tmp\watch-<slug>\`) where `<slug>` is derived from the input (Jira key → `con-8970`; local path → filename stem; URL → last URL segment). Override with `--workdir`.
 
 ```
-c:\tmp\watch-<slug>\
-├── frames\
+${TMPDIR:-/tmp}/watch-<slug>/
+├── frames/
 │   ├── t_001.jpg
 │   ├── t_002.jpg
 │   └── ...
@@ -213,17 +213,18 @@ Skip generation with `--no-report` if you only need raw artifacts.
 
 ## Prereqs (one-time)
 
-- **ffmpeg** on PATH (`winget install Gyan.FFmpeg`)
-- **Python 3.10+** on PATH
-- **faster-whisper**: `pip install --user faster-whisper 'av<19'` (PyAV 19 breaks faster-whisper 1.2.x with `TypeError: ... 'metadata_errors'`)
-- **yt-dlp**: `pip install --user yt-dlp` (for URL mode)
-- **Pillow + imagehash**: `pip install --user Pillow imagehash` (for `--dedup`)
+- **ffmpeg** on PATH: `sudo apt install ffmpeg` (Debian/Ubuntu; `dnf`/`pacman` equivalent) or `brew install ffmpeg`. Windows: `winget install Gyan.FFmpeg`.
+- **Python 3.10+** as `python3`. (Windows: `py`; `python` there is often the Microsoft Store alias.)
+- **All Python deps with tested pins in one go:** `python3 -m pip install -e "${CLAUDE_PLUGIN_ROOT}/mcp-server[full]"` (use a virtualenv on distros that block `pip --user`). Or pick per feature:
+- **faster-whisper**: `python3 -m pip install --user faster-whisper 'av<19'` (PyAV 19 breaks faster-whisper 1.2.x with `TypeError: ... 'metadata_errors'`)
+- **yt-dlp**: `python3 -m pip install --user yt-dlp` (for URL mode)
+- **Pillow + imagehash**: `python3 -m pip install --user Pillow imagehash` (for `--dedup`)
 - **Tesseract + pytesseract** (for `--ocr`):
-  - Windows: `winget install UB-Mannheim.TesseractOCR`
+  - Linux: `sudo apt install tesseract-ocr` (or `dnf`/`pacman` equivalent)
   - macOS: `brew install tesseract`
-  - Linux: `apt install tesseract-ocr` (or `dnf`/`pacman` equivalent)
-  - Plus: `pip install --user pytesseract Pillow`
-  - Non-English languages: install the matching tessdata pack (Windows: rerun installer with language options; Linux: `apt install tesseract-ocr-<code>`)
+  - Windows: `winget install UB-Mannheim.TesseractOCR`
+  - Plus: `python3 -m pip install --user pytesseract Pillow`
+  - Non-English languages: install the matching tessdata pack (Linux: `sudo apt install tesseract-ocr-<code>`; Windows: rerun installer with language options)
 
 First whisper run downloads the model (~250 MB for `small`/`small.en`) to `~/.cache/huggingface/hub/`. Cached after that.
 
@@ -243,7 +244,7 @@ If the **Create API token** button is greyed out or you see a "Restricted by you
 
 ### Step 2 — Save credentials to disk
 
-Create `c:\Users\<you>\.atlassian-token\credentials.json`:
+Create `~/.atlassian-token/credentials.json` (Windows: `%USERPROFILE%\.atlassian-token\credentials.json`):
 
 ```json
 {
@@ -253,24 +254,27 @@ Create `c:\Users\<you>\.atlassian-token\credentials.json`:
 }
 ```
 
-The token in this file is plaintext, so **lock down the file ACL** (PowerShell):
+The token in this file is plaintext, so **lock down the file permissions**:
 
-```powershell
-$path = "$env:USERPROFILE\.atlassian-token\credentials.json"
-icacls $path /inheritance:r /grant:r "${env:USERNAME}:R"
+```bash
+chmod 700 ~/.atlassian-token && chmod 600 ~/.atlassian-token/credentials.json
 ```
+
+Windows (PowerShell): `icacls "$env:USERPROFILE\.atlassian-token\credentials.json" /inheritance:r /grant:r "${env:USERNAME}:R"`
 
 ### Step 3 — Verify
 
-```powershell
-python -c "
-import json, urllib.request, base64
-c = json.load(open(r'$env:USERPROFILE\.atlassian-token\credentials.json'))
-auth = base64.b64encode(f\"{c['email']}:{c['token']}\".encode()).decode()
-req = urllib.request.Request(f\"https://{c['site']}/rest/api/3/myself\", headers={'Authorization': f'Basic {auth}'})
-print(json.load(urllib.request.urlopen(req)).get('displayName'))
-"
+```bash
+python3 - <<'EOF'
+import json, urllib.request, base64, pathlib
+c = json.loads((pathlib.Path.home() / ".atlassian-token" / "credentials.json").read_text())
+auth = base64.b64encode(f"{c['email']}:{c['token']}".encode()).decode()
+req = urllib.request.Request(f"https://{c['site']}/rest/api/3/myself", headers={"Authorization": f"Basic {auth}"})
+print(json.load(urllib.request.urlopen(req)).get("displayName"))
+EOF
 ```
+
+(Windows: save the same Python to a file and run it with `py`.)
 
 Should print your display name. If it returns **401 Unauthorized**:
 - The `email` in `credentials.json` must match the Atlassian **login** account. This is sometimes different from the email shown on your Jira *profile* (e.g. `name@company.com` for login vs `name@subsidiary.com` for profile). Confirm at https://id.atlassian.com/manage-profile/email and update the JSON if needed.
@@ -300,10 +304,12 @@ The orchestrator does steps 1–6 in one command. The agent (me) handles steps 7
 ```bash
 # Single command — auto-detects input kind. Works for path, URL, Jira key, Jira URL, or "auto".
 # Plugin install (recommended):
-python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" <input> [flags]
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" <input> [flags]
 # Manual install at ~/.claude/skills/watch-video/:
-python ~/.claude/skills/watch-video/scripts/watch_video.py <input> [flags]
+python3 ~/.claude/skills/watch-video/scripts/watch_video.py <input> [flags]
 ```
+
+Windows: `py` instead of `python3`.
 
 `${CLAUDE_PLUGIN_ROOT}` is set by Claude Code when the plugin is installed via `/plugin install`. For manual installs (clone into `~/.claude/skills/<name>/`), substitute the install path. The two forms are otherwise identical.
 
@@ -344,7 +350,7 @@ The pattern is two tools used together:
 **Backwards compat:** the blocking `watch_video` tool is still registered and runs through the same no-pipe pipeline runner as `watch_video_start`, so its subprocess output is no longer piped -- no 10-75 s per-step drain latency, no orchestrator-side deadlock. It still holds the calling tool call open for the whole pipeline though, and a host that penalizes long-running tool calls can still stall on that; prefer `watch_video_start` + `watch_video_status` there.
 
 1. **Run the orchestrator.** Pass `<input>` and any of these optional flags:
-   - `--workdir <PATH>` — override default `c:\tmp\watch-<slug>\`
+   - `--workdir <PATH>` — override default `${TMPDIR:-/tmp}/watch-<slug>/`
    - `--start MM:SS --end MM:SS` — focus on a window (applies to frames AND audio consistently)
    - `--frames N` — override auto budget
    - `--resolution 1280` — bump for dense on-screen text
@@ -417,10 +423,10 @@ The pattern is two tools used together:
    #    watch_video.py above (${CLAUDE_PLUGIN_ROOT} when installed via
    #    /plugin install; the manual install path otherwise).
    #    Comma form for simple names:
-   python ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
+   python3 ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
        <workdir> --names "S0=Joe Rogan,S1=Naval Ravikant"
    # JSON form when names contain commas (e.g. "Smith, Jr."):
-   python ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
+   python3 ${CLAUDE_PLUGIN_ROOT:-~/.claude/skills/watch-video}/scripts/relabel_speakers.py \
        <workdir> --names-json '{"S0":"Joe Rogan","S1":"Naval Ravikant"}'
    ```
 
@@ -463,7 +469,7 @@ If you need to display progress to the user during a long run (large download, s
 
 | Flag | Effect |
 |---|---|
-| `--workdir <PATH>` | Override the default `c:\tmp\watch-<slug>\` workdir |
+| `--workdir <PATH>` | Override the default `${TMPDIR:-/tmp}/watch-<slug>/` workdir (Windows: `c:\tmp\watch-<slug>\`) |
 | `--no-audio` | Skip transcription even if audio is present |
 | `--frames N` | Override default frame budget |
 | `--resolution W` | Frame width in px (default 960; use 1280 for dense UI text) |
@@ -537,11 +543,14 @@ Note: Atlassian Cloud disabled password-based REST API auth in 2019 — a person
 
    **a) Environment variable (recommended for CI / shared dev environments):**
 
-   ```powershell
-   [Environment]::SetEnvironmentVariable('GROQ_API_KEY', 'gsk_...', 'User')
+   ```bash
+   # in ~/.bashrc or ~/.zshrc
+   export GROQ_API_KEY='gsk_...'
    # or
-   [Environment]::SetEnvironmentVariable('OPENAI_API_KEY', 'sk-...', 'User')
+   export OPENAI_API_KEY='sk-...'
    ```
+
+   Windows (PowerShell): `[Environment]::SetEnvironmentVariable('GROQ_API_KEY', 'gsk_...', 'User')`
 
    **b) Credentials file at `~/.watch-video/credentials.json` (recommended for desktop, ACL-lockable):**
 
@@ -552,24 +561,28 @@ Note: Atlassian Cloud disabled password-based REST API auth in 2019 — a person
    }
    ```
 
-   ACL-lock it just like the Atlassian credentials:
+   Lock it down just like the Atlassian credentials:
 
-   ```powershell
-   $path = "$env:USERPROFILE\.watch-video\credentials.json"
-   New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
+   ```bash
+   mkdir -p ~/.watch-video && chmod 700 ~/.watch-video
    # ... write the JSON via your editor, then:
-   icacls $path /inheritance:r /grant:r "${env:USERNAME}:R"
+   chmod 600 ~/.watch-video/credentials.json
    ```
+
+   Windows (PowerShell): `icacls "$env:USERPROFILE\.watch-video\credentials.json" /inheritance:r /grant:r "${env:USERNAME}:R"`
 
    **c) One-shot `--whisper-api-key <KEY>` flag** — for ad-hoc use, not persisted.
 
-3. Verify with a tiny test:
+3. Verify with a tiny local clip (no Jira needed):
 
-   ```powershell
-   python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" PROJ-1234 --whisper groq --no-report
+   ```bash
+   ffmpeg -loglevel error -f lavfi -i testsrc=duration=5:size=320x240 \
+       -f lavfi -i sine=frequency=440:duration=5 -shortest /tmp/wv-check.mp4
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" /tmp/wv-check.mp4 \
+       --whisper groq --no-report --workdir /tmp/wv-check
    ```
 
-   If auth fails you'll get `exit_code: 4` with a helpful message listing all three setup options.
+   Exit code is 0 either way. Success: `transcript.provider` is `groq`. Auth failure: `transcript` is null, `skipped_audio_reason` says `transcription failed (groq): ...` and `warnings` has a `transcribe` entry with `exit_code: 4` and the setup options.
 
 ### Security notes (mirror of the Atlassian token guidance)
 
@@ -596,14 +609,14 @@ pipeline consumes. It exists because an agent sandbox usually cannot make the
 authenticated Atlassian call itself, while this skill already holds the token.
 
 ```bash
-# every image on the ticket -> c:/tmp/jira-PROJ-1234/
-python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234
+# every image on the ticket -> ${TMPDIR:-/tmp}/jira-PROJ-1234/
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234
 
 # everything, into a chosen directory
-python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --mime-prefix "" --outdir c:/tmp/proj-1234
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --mime-prefix "" --outdir /tmp/proj-1234
 
 # one specific attachment
-python "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --attachment-id 1001
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/fetch_attachment.py" PROJ-1234 --attachment-id 1001
 ```
 
 Stdout is a JSON array of `{id, filename, mime_type, size_bytes, path}`; open the
@@ -631,21 +644,21 @@ Single video, post the analysis after generation:
 
 ```bash
 # Generate then post in one command (with confirmation prompt):
-python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" PROJ-1234 --dedup --ocr --post-to-jira
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" PROJ-1234 --dedup --ocr --post-to-jira
 
 # Generate first, post later (standalone tool):
-python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" PROJ-1234 --dedup --ocr
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_video.py" PROJ-1234 --dedup --ocr
 # ...review report.md, decide it's good...
-python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-proj-1234
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" /tmp/watch-proj-1234
 
 # Dry-run preview (no POST):
-python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-proj-1234 --dry-run
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" /tmp/watch-proj-1234 --dry-run
 
 # Bypass confirmation (only with explicit prior authorization):
-python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-proj-1234 --yes
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" /tmp/watch-proj-1234 --yes
 
 # Post to a different ticket than the source (override):
-python "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" c:/tmp/watch-foo --jira-key PROJ-9999
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/post_to_jira.py" /tmp/watch-foo --jira-key PROJ-9999
 ```
 
 ### Flags
@@ -668,7 +681,7 @@ The `--highlights-*` flags belong to `watch_video.py` (see its flags table), not
 The `highlights` step picks the most relevant moments from the transcript based on a user prompt. Two invocation paths produce the same artifacts (`highlights.json` / `highlights.md` / `highlights.html`):
 
 1. **Inside Claude Code (default, no API key needed)** — ask Claude conversationally: *"watch PROJ-1234 then write highlights for the bug-related parts"*. Claude runs the pipeline and reads the transcript / frames in conversation to produce the highlights files directly. This path also gets multimodal vision (Claude can look at the frames), so visual prompts work too.
-2. **Headless (CI / scripted, optional, needs a paid API key)** — `python watch_video.py URL --highlights-prompt "..."` or standalone `python highlights.py <workdir> --prompt "..."`. Calls the Anthropic API via the SDK (default model: Haiku 4.5, ~$0.001-0.005 per video). Same JSON validator + frame-matching logic; produces the same artifact files.
+2. **Headless (CI / scripted, optional, needs a paid API key)** — `python3 watch_video.py URL --highlights-prompt "..."` or standalone `python3 highlights.py <workdir> --prompt "..."`. Calls the Anthropic API via the SDK (default model: Haiku 4.5, ~$0.001-0.005 per video). Same JSON validator + frame-matching logic; produces the same artifact files.
 
 Either way, `post_to_jira.py --style summary` automatically picks up `highlights.json` and uses those moments instead of evenly-distributed picks.
 
@@ -760,15 +773,15 @@ For processing many videos in one go (sprint retro, weekly support triage, multi
 
 ```bash
 # Three input modes -- mutually exclusive
-python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --jira-keys PROJ-1234,PROJ-1235,PROJ-1236
-python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --jira-jql "project=PROJ AND labels=video-bug AND created >= -7d"
-python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --inputs "C:/a.mp4,https://youtu.be/abc,PROJ-9999"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --jira-keys PROJ-1234,PROJ-1235,PROJ-1236
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --jira-jql "project=PROJ AND labels=video-bug AND created >= -7d"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --inputs "/data/a.mp4,https://youtu.be/abc,PROJ-9999"
 ```
 
 Any flag not consumed by `watch_batch.py` is forwarded to each `watch_video.py` invocation:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --jira-keys PROJ-1234,PROJ-1235 --dedup --ocr --whisper groq
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --jira-keys PROJ-1234,PROJ-1235 --dedup --ocr --whisper groq
 ```
 
 ### Layout
@@ -776,17 +789,17 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/watch_batch.py" --jira-keys PROJ-1234,PROJ
 Each item gets its own workdir under `<batch-dir>/<slug>/`:
 
 ```
-c:\tmp\watch-batch-<timestamp>\
+${TMPDIR:-/tmp}/watch-batch-<timestamp>/
 ├── batch.json              # per-item results + aggregate summary
-├── proj-1234\              # workdir for PROJ-1234 (same layout as single-video)
-│   ├── frames\
+├── proj-1234/              # workdir for PROJ-1234 (same layout as single-video)
+│   ├── frames/
 │   ├── transcript.md
 │   ├── ocr.txt
 │   ├── report.md
 │   └── meta.json
-├── proj-1235\
+├── proj-1235/
 │   └── ...
-└── proj-1236\
+└── proj-1236/
     └── ...
 ```
 

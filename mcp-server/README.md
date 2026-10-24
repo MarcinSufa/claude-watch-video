@@ -127,7 +127,7 @@ Or, without installing the package, point at the script directly:
 {
   "mcpServers": {
     "watch-video": {
-      "command": "python",
+      "command": "python3",
       "args": ["/absolute/path/to/claude-watch-video/mcp-server/server.py"]
     }
   }
@@ -173,10 +173,10 @@ The server resolves the scripts dir at startup via this env var, falling back to
 USER: Watch https://www.youtube.com/watch?v=O664gH_szoY and tell me what's new.
 
 HOST → MCP: watch_video(input_ref="https://www.youtube.com/watch?v=O664gH_szoY")
-MCP → HOST: { "workdir": "C:/tmp/watch-O664gH_szoY", "elapsed_seconds": 3.82,
+MCP → HOST: { "workdir": "/tmp/watch-O664gH_szoY", "elapsed_seconds": 3.82,
              "transcript": { "provider": "captions", "segments": 19 }, ... }
 
-HOST → MCP: pick_highlights(workdir="C:/tmp/watch-O664gH_szoY",
+HOST → MCP: pick_highlights(workdir="/tmp/watch-O664gH_szoY",
                             prompt="what is new in this Claude release")
 MCP → HOST: { "highlights": [
     { "timestamp": "00:08", "reason": "..." },
@@ -192,7 +192,7 @@ For a Jira flow:
 USER: Triage PROJ-1234 -- watch the attached video and identify the bug.
 
 HOST → MCP: watch_video(input_ref="PROJ-1234", dedup=True, ocr=True)
-MCP → HOST: { "workdir": "C:/tmp/watch-proj-1234", ... }
+MCP → HOST: { "workdir": "/tmp/watch-proj-1234", ... }
 
 HOST → MCP: pick_highlights(workdir="...", prompt="identify the bug and the moment it occurs")
 MCP → HOST: { "highlights": [...] }
@@ -201,7 +201,7 @@ HOST (to user): Here is the bug analysis. Would you like me to post the
                 report back to PROJ-1234?
 USER: Yes, post it.
 
-HOST → MCP: post_to_jira(workdir="C:/tmp/watch-proj-1234", confirm=True)
+HOST → MCP: post_to_jira(workdir="/tmp/watch-proj-1234", confirm=True)
 MCP → HOST: { "issue_key": "PROJ-1234", "comment_id": "10247", ... }
 ```
 

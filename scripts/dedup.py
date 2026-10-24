@@ -14,7 +14,7 @@ Otherwise it is dropped. Remaining frames are renumbered sequentially and
 the timestamps map is updated.
 
 Usage:
-    python dedup.py <workdir> [--threshold N] [--min-interval Ns]
+    python3 dedup.py <workdir> [--threshold N] [--min-interval Ns]
                               [--protect-window Ns]
 
 Stdout: single JSON object with before/after counts + protected timestamps.

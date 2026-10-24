@@ -18,8 +18,8 @@ API key resolution (Anthropic):
 Cost on default model (Haiku 4.5): ~$0.001-0.005 per video transcript.
 
 Usage:
-    python highlights.py <workdir> --prompt "highlight only bug-related moments"
-    python highlights.py <workdir> --prompt "..." --max-n 8 --model claude-sonnet-4-6
+    python3 highlights.py <workdir> --prompt "highlight only bug-related moments"
+    python3 highlights.py <workdir> --prompt "..." --max-n 8 --model claude-sonnet-4-6
 """
 from __future__ import annotations
 

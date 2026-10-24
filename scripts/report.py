@@ -14,7 +14,7 @@ These are *evidence only* -- what was on screen + what was said. The agent's
 analysis (root cause, suggested fix) goes elsewhere.
 
 Usage:
-    python report.py <workdir> [--no-html]
+    python3 report.py <workdir> [--no-html]
 
 Stdout: single JSON object with { "report_path", "html_path" }
 """

@@ -4,10 +4,10 @@ Resolves input → probes → extracts frames → (optionally) transcribes →
 writes <workdir>/meta.json as the durable contract for the agent.
 
 Usage:
-    python watch_video.py <input> [flags]
+    python3 watch_video.py <input> [flags]
 
 <input> can be:
-    - A local path (e.g. C:\\path\\video.mp4)
+    - A local path (e.g. /path/to/video.mp4)
     - A public URL (https://youtu.be/..., Loom, Vimeo, TikTok, etc.)
     - A Jira key (e.g. PROJ-1234)
     - A Jira issue URL (https://*.atlassian.net/browse/<KEY>)
@@ -50,7 +50,9 @@ from _cache import (  # noqa: E402
 SCRIPTS_DIR = Path(__file__).parent
 JIRA_KEY_RE = re.compile(r"^[A-Z]{2,10}-\d+$")
 JIRA_URL_RE = re.compile(r"https?://[^/]+/browse/([A-Z]{2,10}-\d+)")
-DEFAULT_WORKDIR_ROOT = Path("c:/tmp") if sys.platform == "win32" else Path("/tmp")
+# POSIX: honor $TMPDIR (macOS sets a per-user one), else /tmp.
+DEFAULT_WORKDIR_ROOT = (Path("c:/tmp") if sys.platform == "win32"
+                        else Path(os.environ.get("TMPDIR") or "/tmp"))
 
 
 # ---- Input dispatch -------------------------------------------------------
@@ -507,7 +509,8 @@ def main() -> int:
         description="Watch a video: frames + transcript for Claude to consume.")
     ap.add_argument("input", help="path, URL, Jira key, Jira URL, or 'auto'")
     ap.add_argument("--workdir",
-                    help="override workdir (default: c:/tmp/watch-<slug>/)")
+                    help="override workdir (default: $TMPDIR or /tmp, c:/tmp on "
+                         "Windows, + /watch-<slug>/)")
     # Fetch options
     ap.add_argument("--attachment-id",
                     help="(Jira mode) disambiguate multiple video attachments")

@@ -6,7 +6,7 @@ Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, 
 
 | Flag | Purpose |
 |---|---|
-| `--workdir <PATH>` | Override the default workdir. Default uses a fixed root per OS — `c:\tmp\watch-<slug>\` on Windows, `/tmp/watch-<slug>/` on macOS/Linux. (Note: fixed paths, not the system temp dir like `%TEMP%` / `TMPDIR`.) Pass `--workdir` to put outputs anywhere else. |
+| `--workdir <PATH>` | Override the default workdir. Default: `${TMPDIR:-/tmp}/watch-<slug>/` on Linux/macOS (`$TMPDIR` when set, else `/tmp`), `c:\tmp\watch-<slug>\` on Windows (fixed; `%TEMP%` is not used). Pass `--workdir` to put outputs anywhere else. |
 | `--start MM:SS --end MM:SS` | Scope to a window; transcript timestamps stay original-video-time |
 | `--no-cache` | Bypass the per-step output cache |
 | `--force-step NAME[,...]` | Force a specific step (downstream auto-invalidates) |
@@ -92,9 +92,9 @@ Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, 
 Rewrites anonymous `**S0**` / `**S1**` speaker tags from a `--whisper deepgram` run with real names. Atomic, in place; auto-regenerates `report.md` / `.html` / `.docx` if they exist in the workdir. Typical wall-clock: ~0.1 second.
 
 ```bash
-python scripts/relabel_speakers.py <workdir> --names "S0=Joe,S1=Naval"
+python3 scripts/relabel_speakers.py <workdir> --names "S0=Joe,S1=Naval"
 # Or, for names with commas:
-python scripts/relabel_speakers.py <workdir> --names-json '{"S0":"Smith, Jr."}'
+python3 scripts/relabel_speakers.py <workdir> --names-json '{"S0":"Smith, Jr."}'
 ```
 
 | Flag | Purpose |

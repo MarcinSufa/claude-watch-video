@@ -32,7 +32,7 @@ Stderr: structured JSON events (start / complete / warning).
 Exit codes: see _common.ExitCode.
 
 Usage example:
-    python scripts/relabel_speakers.py C:/tmp/watch-podcast \
+    python3 scripts/relabel_speakers.py /tmp/watch-podcast \
         --names "S0=Joe Rogan,S1=Naval Ravikant"
 """
 from __future__ import annotations

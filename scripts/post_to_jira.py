@@ -14,7 +14,7 @@ Safety stack:
   5. Read-only fallback: any HTTP non-201 -> exit non-zero, no retries.
 
 Usage:
-    python post_to_jira.py <workdir> [--jira-key PROJ-X] [--dry-run]
+    python3 post_to_jira.py <workdir> [--jira-key PROJ-X] [--dry-run]
                                      [--yes] [--force]
                                      [--credentials PATH]
 

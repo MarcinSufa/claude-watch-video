@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -48,7 +49,9 @@ class SizeMismatch(Exception):
             f"download size mismatch for {att_id}: got {observed}, expected {expected}")
         self.att_id, self.observed, self.expected = att_id, observed, expected
 
-DEFAULT_OUTDIR_ROOT = Path("c:/tmp") if sys.platform == "win32" else Path("/tmp")
+# POSIX: honor $TMPDIR (macOS sets a per-user one), else /tmp.
+DEFAULT_OUTDIR_ROOT = (Path("c:/tmp") if sys.platform == "win32"
+                       else Path(os.environ.get("TMPDIR") or "/tmp"))
 
 
 def _default_outdir(jira_key: str) -> Path:

@@ -17,7 +17,7 @@ and transcript timestamps are offset by --start so they map to the *original*
 video timeline.
 
 Usage:
-    python transcribe.py <workdir> [--video <path>] [--lang CODE]
+    python3 transcribe.py <workdir> [--video <path>] [--lang CODE]
                                    [--whisper captions|local|groq|openai]
                                    [--captions-vtt <path>]
                                    [--model NAME]

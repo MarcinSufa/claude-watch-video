@@ -36,7 +36,9 @@ from typing import Any
 # _default_workdir when the caller doesn't specify a workdir. Picking a
 # platform-appropriate root matters because Path(r"C:\tmp") is a *relative*
 # path on POSIX -- a literal C:\tmp under the server's CWD -- not /tmp.
-DEFAULT_WORKDIR_ROOT = Path("c:/tmp") if sys.platform == "win32" else Path("/tmp")
+# POSIX: honor $TMPDIR (macOS sets a per-user one), else /tmp.
+DEFAULT_WORKDIR_ROOT = (Path("c:/tmp") if sys.platform == "win32"
+                        else Path(os.environ.get("TMPDIR") or "/tmp"))
 
 from mcp.server.fastmcp import Context, FastMCP
 

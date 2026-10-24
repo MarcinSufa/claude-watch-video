@@ -63,7 +63,7 @@ def _load_creds(creds_path: Path) -> dict:
         die(ExitCode.BAD_INPUT,
             f"Atlassian credentials not found at {creds_path}",
             credentials_path=str(creds_path),
-            hint="See SKILL.md -> Jira token setup")
+            hint="See references/jira.md -> Jira token setup")
     return json.loads(creds_path.read_text(encoding="utf-8"))
 
 

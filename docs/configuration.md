@@ -1,6 +1,6 @@
 # Configuration reference
 
-Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, organized by what it affects. For per-script details (each individual step's flags) see [`SKILL.md`](../SKILL.md).
+Full reference for `scripts/watch_video.py` (the CLI orchestrator). Every flag, organized by what it affects. For per-script details (each individual step's flags) see [`references/pipeline.md`](../references/pipeline.md) and the other files in [`references/`](../references/).
 
 ## Workdir + scope
 

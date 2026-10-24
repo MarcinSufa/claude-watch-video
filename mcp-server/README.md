@@ -45,6 +45,36 @@ For CI, batch processing, or when you want streaming progress, the **CLI is stil
 
 Plus one MCP **resource**: `workdir://<path>/meta.json` — read-only access to the workdir's metadata, for hosts that prefer the resource-browser pattern.
 
+### Agent guidance for the polling pair
+
+(Moved here from SKILL.md, which now covers the Claude Code CLI path only.)
+
+```
+1. Call mcp__watch-video__watch_video_start(input_ref=<URL>, ...)
+   → returns immediately with {"job_id": "<workdir-path>", "state": "running", ...}
+
+2. Loop: call mcp__watch-video__watch_video_status(job_id=<workdir-path>)
+   → wait ~3 seconds between polls
+   → break when "state" is "done", "failed", "stale" or "unknown"
+   → typical completion: 5-30 seconds for short YouTube clips with captions
+   → frames land in <workdir>/frames/ within ~10 s of start; for a silent
+     screen recording, read them with the host's image-read tool as soon as
+     watch_video_status shows the "frames" step complete, instead of
+     waiting for OCR or the report
+
+3. When state is "done":
+   - status["meta"] contains the full meta.json (workdir, transcript info,
+     frame counts, `warnings` -- read them, a skipped step is reported there)
+   - The workdir is also at status["workdir"]
+   - read_transcript(workdir=...) / read_report(workdir=..., fmt="md")
+   - pick_highlights(workdir=..., prompt="...") for LLM-driven moments (paid key)
+   - post_to_jira(workdir=..., confirm=True) to post (with user approval)
+```
+
+- **Jira issues carrying more than one video:** pass `attachment_id=<id>` to `watch_video_start` (or `watch_video`, which reports the same candidates in its error). Without it the job ends as `state: "failed"` with an `ambiguous` block listing every candidate (`id`, `filename`, `size_bytes`, `created`, `author`) and nothing is downloaded. Show that list, ask which video, then start again with its id. Each id gets its own workdir, so two videos from one ticket never share artifacts.
+- **Polling cadence:** start with 1-second intervals for the first few seconds (captions-eligible content often completes in <5 s), then back off to 3-5 second intervals. Most short clips complete in <10 seconds total; longer videos with local Whisper can take 30-120 seconds. A running state for 2-3 minutes on a short clip with `ocr=True` is normal on Windows (cold-start cost); past that, something is genuinely wrong -- surface this to the user.
+- **Why two tools instead of one blocking call:** the `watch_video` tool blocks the host for a single tool call that can run minutes, which some hosts (Claude Desktop on Windows among them) penalize. With the polling pair every tool call returns in <100 ms, and each poll shows the user the work is alive.
+
 ---
 
 ## Safety contract for `post_to_jira`
@@ -95,7 +125,7 @@ Optional, unlocks features:
 | Optional | Unlocks |
 |---|---|
 | `yt-dlp` | URL input mode |
-| `Pillow` + `imagehash` | smart dedup (silent videos skip dedup: no transcript means no frame protection, see SKILL.md) |
+| `Pillow` + `imagehash` | smart dedup (silent videos skip dedup: no transcript means no frame protection, see references/ocr-dedup.md) |
 | `pytesseract` + Tesseract binary | OCR on frames |
 | `anthropic` / `openai` Python SDK | LLM highlights |
 | `python-docx` | `report.docx` (gracefully skipped if missing) |

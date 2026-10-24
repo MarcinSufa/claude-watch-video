@@ -543,7 +543,7 @@ def main() -> int:
     # Audio options
     ap.add_argument("--no-audio", action="store_true",
                     help="skip transcription even if audio is present")
-    ap.add_argument("--model", help="whisper model id (provider-specific; see SKILL.md)")
+    ap.add_argument("--model", help="whisper model id (provider-specific; see references/whisper-providers.md)")
     ap.add_argument("--lang", help="ISO language code or 'auto'")
     ap.add_argument("--whisper",
                     choices=("auto", "captions", "local", "groq", "openai",
@@ -746,7 +746,7 @@ def main() -> int:
     # step burns ~15k+ tokens of context. Purely advisory -- doesn't change
     # the run -- but agents that tail the stderr event stream can spot the
     # recommendation and re-run with --highlights-prompt on the next
-    # iteration. See SKILL.md "Decide before invoking" for the full guidance.
+    # iteration. See SKILL.md "Pick flags" for the full guidance.
     #
     # Two gates that the naive version missed:
     #   1. Use the EFFECTIVE window duration when --start/--end is set --

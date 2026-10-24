@@ -37,7 +37,7 @@ That's one card from a real `highlights.md` rendered inline. The pipeline also p
 
 Then ask Claude: *"Watch https://youtu.be/… and tell me what's in it."* or *"Watch PROJ-1234 and identify the bug."*
 
-Works on every Claude Code surface — CLI, IDE extensions, desktop. The plugin auto-installs the same underlying skill (see [`SKILL.md`](SKILL.md) for the manual install path if you prefer to clone into `~/.claude/skills/` directly).
+Works on every Claude Code surface — CLI, IDE extensions, desktop. The plugin auto-installs the same underlying skill. To install it by hand instead, clone the repo to `~/.claude/skills/watch-video/`: [`SKILL.md`](SKILL.md) sits at the repo root and finds its scripts through `${CLAUDE_SKILL_DIR}` either way.
 
 ### CLI direct (CI / scripting / power users)
 
@@ -78,7 +78,7 @@ Optional (unlock features as you need them):
 | URL mode (YouTube, Loom, …) | `pip install --user yt-dlp` |
 | Local transcription (`--whisper local`) | `pip install --user faster-whisper 'av<19'` (PyAV 19 breaks faster-whisper 1.2.x: `TypeError ... 'metadata_errors'`) |
 | Smart dedup (`--dedup`) | `pip install --user Pillow imagehash` |
-| OCR (`--ocr`) | `pip install --user pytesseract Pillow` + Tesseract binary ([SKILL.md → OCR setup](SKILL.md#on-screen-text-search-with---ocr)) |
+| OCR (`--ocr`) | `pip install --user pytesseract Pillow` + Tesseract binary ([references/setup.md](references/setup.md), [OCR notes](references/ocr-dedup.md#on-screen-text-search-with---ocr)) |
 | Hosted Whisper (Groq/OpenAI/Deepgram) | API key — env var or `~/.watch-video/credentials.json` |
 | **Local diarization (`--whisper whisperx`)** | `pip install pyannote.audio` (the underlying lib; ~500 MB-1 GB of model weights cached on first run) + HF token (`HF_TOKEN` env or `hf_token` in credentials.json) + accept terms at **three** gated repos: [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1), [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0), and [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) |
 | LLM highlights (`--highlights-prompt`) | Anthropic/OpenAI/Groq/DeepSeek/Gemini API key |
@@ -209,7 +209,7 @@ python3 scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper deepgra
 # Same, but local + offline (WhisperX recipe; free; ~1 GB first-run model download)
 # Implemented via faster-whisper + pyannote.audio directly (no whisperx package
 # wrapper, which has stale dep pins broken on Python 3.14). Requires HF token
-# + accepting terms on three gated pyannote models. See SKILL.md.
+# + accepting terms on three gated pyannote models. See references/whisper-providers.md.
 python3 scripts/watch_video.py "https://youtu.be/joe-vs-naval" --whisper whisperx
 
 # Relabel anonymous speakers with real names (v2.3.1+; works for both providers)
@@ -267,7 +267,7 @@ scripts/                  ← canonical implementation
 mcp-server/server.py      ← thin async wrapper over the CLI scripts
 ```
 
-Each step writes to disk atomically (staged then `os.replace`'d). Per-step fingerprint cache; re-run with a tweaked flag and only the affected tail executes. Workdir is a contract — every artifact has a known filename and shape ([SKILL.md → file layout](SKILL.md)).
+Each step writes to disk atomically (staged then `os.replace`'d). Per-step fingerprint cache; re-run with a tweaked flag and only the affected tail executes. Workdir is a contract — every artifact has a known filename and shape ([references/meta-schema.md → file layout](references/meta-schema.md#workspace)).
 
 ---
 

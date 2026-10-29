@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -38,7 +39,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import (  # noqa: E402
-    ExitCode, atomic_path, die, emit, finalize,
+    ExitCode, atomic_path, die, emit, finalize, require_executable,
     parse_time_spec, window_duration,
 )
 from _cache import (  # noqa: E402
@@ -351,6 +352,55 @@ def smart_dedup(workdir: Path, threshold: int,
                      "--protect-window", str(protect_window)])
 
 
+def _contact_sheet_grid(frame_count: int) -> tuple[int, int]:
+    if frame_count < 1:
+        raise ValueError("contact sheet needs at least one frame")
+    cols = math.ceil(math.sqrt(frame_count))
+    return cols, math.ceil(frame_count / cols)
+
+
+def _build_contact_sheet_command(frame_paths: list[Path], concat_file: Path,
+                                 output: Path,
+                                 ffmpeg: str = "ffmpeg") -> tuple[list[str], str]:
+    cols, rows = _contact_sheet_grid(len(frame_paths))
+    entries = []
+    for frame_path in frame_paths:
+        path = frame_path.resolve().as_posix().replace("'", "'\\''")
+        entries.append(f"file '{path}'\n")
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+           "-f", "concat", "-safe", "0", "-i", str(concat_file),
+           "-vf", f"scale=400:-1,tile={cols}x{rows}:padding=4",
+           "-frames:v", "1", str(output)]
+    return cmd, "".join(entries)
+
+
+def create_contact_sheet(frames_info: dict, workdir: Path) -> str:
+    frames_dir = Path(frames_info.get("frames_dir") or workdir / "frames")
+    timestamps = frames_info.get("timestamps_by_frame") or {}
+    frame_paths = [p for p in frames_dir.iterdir()
+                   if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg")]
+    frame_paths.sort(key=lambda p: (float(timestamps.get(p.name, math.inf)), p.name))
+    sheet_path = workdir / "sheet.jpg"
+    staging = atomic_path(sheet_path)
+    concat_file = atomic_path(workdir / "contact-sheet.ffconcat")
+    ffmpeg = require_executable("ffmpeg")
+    cmd, concat_input = _build_contact_sheet_command(
+        frame_paths, concat_file, staging, ffmpeg)
+    try:
+        concat_file.write_text(concat_input, encoding="utf-8")
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if not staging.is_file():
+            die(ExitCode.IO_FAIL, "ffmpeg did not create the contact sheet")
+        finalize(staging, sheet_path)
+    except subprocess.CalledProcessError as e:
+        die(ExitCode.IO_FAIL,
+            f"ffmpeg contact sheet failed: {(e.stderr or '').strip()[-300:]}")
+    finally:
+        staging.unlink(missing_ok=True)
+        concat_file.unlink(missing_ok=True)
+    return str(sheet_path)
+
+
 def ocr(workdir: Path, lang: str, min_text_length: int) -> dict:
     return run_step("ocr",
                     [sys.executable, str(SCRIPTS_DIR / "ocr.py"), str(workdir),
@@ -520,6 +570,8 @@ def main() -> int:
     # Frame options
     ap.add_argument("--frames", type=int, default=0)
     ap.add_argument("--resolution", type=int, default=960)
+    ap.add_argument("--contact-sheet", action="store_true",
+                    help="tile all kept frames into workdir/sheet.jpg")
     ap.add_argument("--scene-mode", action="store_true",
                     help="extract frames at scene changes (better token efficiency on long videos)")
     ap.add_argument("--scene-threshold", type=float, default=0.3)
@@ -688,6 +740,7 @@ def main() -> int:
     meta.setdefault("report", None)
     # Per-run diagnostics; never inherited from a previous run's meta.json.
     meta["warnings"] = []
+    meta["contact_sheet"] = None
     meta.pop("error", None)
     if args.no_cache:
         meta["cache"] = {"schema": 1, "steps": {}}
@@ -938,6 +991,18 @@ def main() -> int:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 record_step(meta, "dedup", dedup_step_fp, [frames_dir])
                 save_meta()
+
+    # 5.5. Contact sheet (optional) -----------------------------------------
+    if args.contact_sheet:
+        sheet_path, failure = _soft_step(
+            "contact_sheet", create_contact_sheet,
+            meta.get("frames") or {}, workdir)
+        if failure:
+            warn("contact_sheet", f"contact sheet failed: {failure['msg']}",
+                 exit_code=failure["exit_code"])
+        else:
+            meta["contact_sheet"] = sheet_path
+            save_meta()
 
     # 6. OCR (optional) -----------------------------------------------------
     ocr_step_fp: str | None = None

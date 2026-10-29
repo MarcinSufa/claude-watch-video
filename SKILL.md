@@ -59,7 +59,7 @@ Frames are the expensive part. A 960 px 16:9 frame (the default) costs about 690
 
 1. Grep `transcript.md` for the words in the question; note the `(_MM:SS_)` stamps of the paragraphs that match. Read whole `transcript.md` only for a summary.
 2. Map those times to frames with `frames.timestamps_by_frame` and read the frames around each one, densely near the moment that matters.
-3. No question-specific moment (summary, silent video): start with about 8 frames - first, last, and deciles 1, 2, 4, 6, 8, 9 - and add more only where something changes.
+3. No question-specific moment (summary, silent video): start with about 8 frames - first, last, and deciles 1, 2, 4, 6, 8, 9 - and add more only where something changes. For whole-video or cross-video visual questions, pass `--contact-sheet` and read each `sheet.jpg` first; open individual frames for detail.
 4. With `--ocr`, grep `ocr.txt` (`[t_012.jpg @ 00:20]` headers) for on-screen values instead of opening frames.
 
 Answer with:

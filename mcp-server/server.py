@@ -426,6 +426,7 @@ def _build_pipeline_args(
     model: str | None = None,
     resolution: int | None = None,
     no_audio: bool = False,
+    contact_sheet: bool = False,
     highlights_prompt: str | None = None,
 ) -> list[str]:
     """Build watch_video.py's argv tail. Shared by watch_video and
@@ -451,6 +452,8 @@ def _build_pipeline_args(
         args.append("--no-docx")
     if no_audio:
         args.append("--no-audio")
+    if contact_sheet:
+        args.append("--contact-sheet")
     if model:
         args += ["--model", model]
     if lang:
@@ -707,6 +710,7 @@ async def watch_video(
     model: str | None = None,
     resolution: int | None = None,
     no_audio: bool = False,
+    contact_sheet: bool = False,
     highlights_prompt: str | None = None,
     ctx: Context | None = None,
 ) -> str:
@@ -761,6 +765,7 @@ async def watch_video(
         resolution: Frame width in px (CLI default 960). Larger frames cost
             more tokens to read.
         no_audio: Skip audio and transcription entirely (frames only).
+        contact_sheet: Write a tiled image of all kept frames to sheet.jpg.
         highlights_prompt: Headless runs only: ask the highlights step
             (paid Anthropic API, needs a key) to pick moments for this
             prompt. Inside a Claude session, pick the moments yourself from
@@ -795,6 +800,7 @@ async def watch_video(
             input_ref, job_id, attachment_id, frames, dedup, ocr, whisper,
             start, end, no_html, no_docx, lang=lang, model=model,
             resolution=resolution, no_audio=no_audio,
+            contact_sheet=contact_sheet,
             highlights_prompt=highlights_prompt)
         _prepare_run_logs(job_id)
         _write_status(job_id, {
@@ -838,6 +844,7 @@ async def watch_video_start(
     model: str | None = None,
     resolution: int | None = None,
     no_audio: bool = False,
+    contact_sheet: bool = False,
     highlights_prompt: str | None = None,
 ) -> str:
     """Start the watch-video pipeline as a background job. Returns immediately
@@ -866,7 +873,7 @@ async def watch_video_start(
             (id, filename, size, created, author): ask which one, then start
             again passing its id. Ids also come from getJiraIssue.
         frames, dedup, ocr, whisper, start, end, no_html, no_docx, lang,
-            model, resolution, no_audio, highlights_prompt: same as
+            model, resolution, no_audio, contact_sheet, highlights_prompt: same as
             watch_video (dedup is off unless asked for, like the CLI).
 
     Returns:
@@ -900,6 +907,7 @@ async def watch_video_start(
         input_ref, job_id, attachment_id, frames, dedup, ocr, whisper,
         start, end, no_html, no_docx, lang=lang, model=model,
         resolution=resolution, no_audio=no_audio,
+        contact_sheet=contact_sheet,
         highlights_prompt=highlights_prompt)
 
     # Write the initial "running" status BEFORE launching the background task,

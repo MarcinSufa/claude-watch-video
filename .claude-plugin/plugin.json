@@ -1,6 +1,6 @@
 {
   "name": "watch-video",
-  "version": "2.5.2",
+  "version": "2.6.0",
   "description": "Make Claude watch any video. Local file, public URL (yt-dlp), or Jira attachment (fully automated). Extracts keyframes with ffmpeg, transcribes with local faster-whisper or hosted Groq/OpenAI Whisper, and produces a paste-ready evidence-bundle Markdown report.",
   "author": {
     "name": "Marcin Sufa",

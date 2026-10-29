@@ -7,13 +7,16 @@ transcribed as Polish, a CPU box could not pick tiny.en for a long video, and
 a frames-only run was impossible. dedup defaulted to True in MCP but is
 opt-in (--dedup) on the CLI. A cancel called proc.kill(), which signals only
 the orchestrator: ffmpeg/whisper/tesseract kept running and writing into the
-workdir while a retry started (ROADMAP residual).
+workdir while a retry started (ROADMAP residual). On Windows the same cancel
+left them running until _kill_tree switched to taskkill /F /T.
 """
 from __future__ import annotations
 
 import asyncio
 import inspect
 import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -76,6 +79,14 @@ async def test_watch_video_start_passes_new_params(tmp_path, monkeypatch):
 
 
 def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            check=False)
+        return any(line.split()[1:2] == [str(pid)]
+                   for line in result.stdout.splitlines())
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -90,7 +101,6 @@ def _alive(pid: int) -> bool:
         return True
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 @pytest.mark.asyncio
 async def test_cancel_kills_grandchildren(tmp_path, monkeypatch):
     """Real processes: the script spawns a sleeping grandchild (standing in
@@ -122,7 +132,49 @@ async def test_cancel_kills_grandchildren(tmp_path, monkeypatch):
         assert not _alive(grandchild), "grandchild outlived the cancelled call"
     finally:
         if _alive(grandchild):
-            os.kill(grandchild, 9)
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(grandchild)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10, check=False)
+            else:
+                os.kill(grandchild, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("failure", [None, "missing", "nonzero", "timeout"])
+def test_kill_tree_uses_taskkill_on_windows(monkeypatch, failure):
+    class _Proc:
+        pid = 12345
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    p = _Proc()
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if failure == "missing":
+            raise FileNotFoundError
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        return subprocess.CompletedProcess(args, 1 if failure == "nonzero" else 0)
+
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(server, "_OWN_PROCESS_GROUP", False)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    server._kill_tree(p)
+
+    assert calls == [(
+        ["taskkill", "/F", "/T", "/PID", "12345"],
+        {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+         "timeout": 10, "check": False},
+    )]
+    assert p.killed is (failure is not None)
 
 
 def test_kill_tree_falls_back_to_kill_without_pid():

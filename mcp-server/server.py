@@ -26,6 +26,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -72,25 +73,37 @@ SCRIPTS_DIR = _resolve_scripts_dir()
 # tesseract and whisper grandchildren it spawned. proc.kill() alone signals
 # only the direct child, and a leftover grandchild kept writing frames/ and
 # the step logs while a retry started a second run in the same workdir.
-# Windows keeps proc.kill() (TerminateProcess on the direct child); a job
-# object / `taskkill /F /T` there is still open, see ROADMAP.
+# Windows has no process group here: _kill_tree runs `taskkill /F /T` on the
+# child's pid instead, which walks the parent-pid tree.
 _OWN_PROCESS_GROUP = sys.platform != "win32"
 
 
 def _kill_tree(proc) -> None:
-    """Kill a child started by this module and, on POSIX, its descendants.
+    """Kill a child started by this module and its descendants.
 
-    Falls back to proc.kill() when the group is already gone or the handle
-    carries no pid. Raises what proc.kill() raises (ProcessLookupError) so
-    callers keep their existing handling."""
+    POSIX kills the process group, Windows runs `taskkill /F /T`. Falls back
+    to proc.kill() when that fails or the handle carries no pid. Raises what
+    proc.kill() raises (ProcessLookupError) so callers keep their existing
+    handling."""
     pid = getattr(proc, "pid", None)
-    if _OWN_PROCESS_GROUP and isinstance(pid, int) and pid > 0:
-        try:
-            # start_new_session made the child a group leader: pgid == pid.
-            os.killpg(pid, signal.SIGKILL)
-            return
-        except (ProcessLookupError, PermissionError):
-            pass
+    if isinstance(pid, int) and pid > 0:
+        if _OWN_PROCESS_GROUP:
+            try:
+                # start_new_session made the child a group leader: pgid == pid.
+                os.killpg(pid, signal.SIGKILL)
+                return
+            except (ProcessLookupError, PermissionError):
+                pass
+        elif sys.platform == "win32":
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10, check=False)
+                if result.returncode == 0:
+                    return
+            except (OSError, subprocess.TimeoutExpired):
+                pass
     proc.kill()
 
 
@@ -151,9 +164,9 @@ async def _spawn_script(
                 # Not awaited: an await inside a cancelled task is not
                 # guaranteed to resume, and waiting here hung the
                 # cancellation itself in the first version of this code. The
-                # cost is that the exit status is never reaped here. On
-                # POSIX _kill_tree takes the grandchildren (ffmpeg,
-                # tesseract) down too; on Windows only the direct child.
+                # cost is that the exit status is never reaped here.
+                # _kill_tree takes the grandchildren (ffmpeg, tesseract) down
+                # too, on POSIX and on Windows.
                 if proc.returncode is None:
                     _kill_tree(proc)
                 raise

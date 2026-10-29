@@ -12,6 +12,7 @@ ${TMPDIR:-/tmp}/watch-<slug>/
 │   ├── t_001.jpg
 │   ├── t_002.jpg
 │   └── ...
+├── sheet.jpg                    # only if --contact-sheet was requested
 ├── <attachment-or-source>.mp4   # downloaded by fetch.py (jira/url modes)
 ├── audio.wav                    # extracted when transcribing
 ├── transcript.txt               # granular, one line per Whisper segment
@@ -34,6 +35,7 @@ Cleanup: leave the workdir in place after analysis so the user can rerun. Remove
 {
   "schema_version": 2,
   "workdir": "...",
+  "contact_sheet": ".../sheet.jpg or null",
   "input": {"raw": "PROJ-1234", "kind": "jira|url|path|auto", "value": "..."},
   "video": {
     "path": "...",
@@ -92,6 +94,7 @@ Cleanup: leave the workdir in place after analysis so the user can rerun. Remove
 - `error` (`{exit_code, step, msg}`) appears only on a non-zero exit after frames existed; stdout still carries the partial meta.
 - When `report` is `null`, the user passed `--no-report` (or the report step failed, see `warnings`).
 - `frames.timestamps_by_frame` is the authoritative source for per-frame timestamps (works for both uniform and scene-change modes; needed because non-uniform spacing breaks fps-based math).
+- `contact_sheet` is the path to `sheet.jpg` when `--contact-sheet` succeeds, otherwise `null`.
 - `frames.dedup` only present when `--dedup` ran.
 
 **Schema changes from v1:**

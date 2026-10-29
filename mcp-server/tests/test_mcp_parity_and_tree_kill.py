@@ -31,13 +31,15 @@ def test_new_flags_map_to_cli_flags():
     args = server._build_pipeline_args(
         "clip.mp4", "/tmp/wd", None, None, False, False, "local", None, None,
         False, False, lang="pl", model="tiny", resolution=1280,
-        no_audio=True, highlights_prompt="find the error")
+        no_audio=True, contact_sheet=True,
+        highlights_prompt="find the error")
     assert args[:3] == ["clip.mp4", "--workdir", "/tmp/wd"]
     assert "--dedup" not in args
     assert args[args.index("--lang") + 1] == "pl"
     assert args[args.index("--model") + 1] == "tiny"
     assert args[args.index("--resolution") + 1] == "1280"
     assert "--no-audio" in args
+    assert "--contact-sheet" in args
     assert args[args.index("--highlights-prompt") + 1] == "find the error"
 
 
@@ -51,7 +53,8 @@ def test_unset_flags_add_nothing():
 @pytest.mark.parametrize("tool", [server.watch_video, server.watch_video_start])
 def test_tools_expose_parity_params_and_cli_dedup_default(tool):
     params = inspect.signature(tool).parameters
-    for name in ("lang", "model", "resolution", "no_audio", "highlights_prompt"):
+    for name in ("lang", "model", "resolution", "no_audio", "contact_sheet",
+                 "highlights_prompt"):
         assert name in params, f"{tool.__name__} lacks {name}"
     assert params["dedup"].default is False
 
@@ -66,7 +69,8 @@ async def test_watch_video_start_passes_new_params(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_run_pipeline_and_update_status", fake_pipeline)
     await server.watch_video_start(str(tmp_path / "clip.mp4"),
                                    workdir=str(tmp_path / "wd"),
-                                   lang="pl", model="tiny.en", no_audio=True)
+                                   lang="pl", model="tiny.en", no_audio=True,
+                                   contact_sheet=True)
     for _ in range(10):
         if "args" in captured:
             break
@@ -76,6 +80,7 @@ async def test_watch_video_start_passes_new_params(tmp_path, monkeypatch):
     assert args[args.index("--lang") + 1] == "pl"
     assert args[args.index("--model") + 1] == "tiny.en"
     assert "--no-audio" in args
+    assert "--contact-sheet" in args
 
 
 def _alive(pid: int) -> bool:

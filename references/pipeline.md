@@ -59,6 +59,7 @@ Bump `--resolution 1280` when frames contain hard-to-read on-screen text (code, 
 | `--workdir <PATH>` | Override the default `${TMPDIR:-/tmp}/watch-<slug>/` workdir (Windows: `c:\tmp\watch-<slug>\`) |
 | `--no-audio` | Skip transcription even if audio is present |
 | `--frames N` | Override default frame budget |
+| `--contact-sheet` | Tile all kept frames in time order into `<workdir>/sheet.jpg` with a grid sized to include every frame |
 | `--resolution W` | Frame width in px (default 960; use 1280 for dense UI text) |
 | `--whisper PROVIDER` | Transcription provider: `auto` (default: `captions` when yt-dlp pulled a VTT, else `local`) / `captions` / `local` (faster-whisper, offline, no API key) / `groq` / `openai` / `deepgram` / `whisperx`. See [whisper-providers.md](whisper-providers.md). |
 | `--whisper-api-key KEY` | One-shot API key. **WARNING:** visible in shell history, process listings, and agent transcripts. Do not use on shared machines or recorded sessions. Prefer env var or credentials file. |
@@ -95,4 +96,5 @@ Sub-scripts (`fetch.py`, `probe.py`, `frames.py`, `transcribe.py`) can be run in
 - **Long videos.** Past ~10 min, frame sampling gets sparse. Prefer `--start`/`--end` on the part you actually care about.
 - **Non-English audio.** Multilingual `small` model is good but not great. For high accuracy in non-English, use `--model medium` (~3× slower, ~2× the model size).
 - **Heavy on-screen text.** Default 960 px frames may not render small labels legibly. Bump to 1280 or 1536 when needed.
+- **Contact sheets are unlabelled.** `drawtext` can segfault on ffmpeg builds without fontconfig; read tiles in time order and open individual frames when you need detail.
 - **`--dedup` needs a transcript.** With `--no-audio`, a silent track or a failed transcription, dedup is skipped (a `warnings` entry says so) because only the temporal floor would protect frames. Bound the budget with `--frames N` instead.

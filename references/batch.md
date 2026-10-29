@@ -17,6 +17,8 @@ Any flag not consumed by `watch_batch.py` is forwarded to each `watch_video.py` 
 python3 "${CLAUDE_SKILL_DIR}/scripts/watch_batch.py" --jira-keys PROJ-1234,PROJ-1235 --dedup --ocr --whisper groq
 ```
 
+For whole-video or cross-video visual questions, pass `--contact-sheet` and read each video's `sheet.jpg` first. It tiles all kept frames in time order; open individual frames when you need detail.
+
 ## Layout
 
 Each item gets its own workdir under `<batch-dir>/<slug>/`:

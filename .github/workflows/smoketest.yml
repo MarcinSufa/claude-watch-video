@@ -21,14 +21,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Ubuntu is the fast/cheap path; Windows confirms cross-platform claim.
-        # macOS skipped for now -- adds ~5min queue time without catching anything
-        # ubuntu doesn't, and the user dev'd this on Windows so the Windows job
-        # gives us the higher-signal cross-platform check.
+        # Marcin decided on 2026-10-29 to test macOS in CI.
         include:
           - os: ubuntu-latest
             python: '3.10'
           - os: ubuntu-latest
+            python: '3.12'
+          - os: macos-latest
             python: '3.12'
           - os: windows-latest
             python: '3.12'
@@ -53,6 +52,10 @@ jobs:
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
         uses: AnimMouse/setup-ffmpeg@v1
+
+      - name: Install ffmpeg and Tesseract (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg tesseract
 
       - name: Verify ffmpeg is on PATH
         run: ffmpeg -version | head -n 1

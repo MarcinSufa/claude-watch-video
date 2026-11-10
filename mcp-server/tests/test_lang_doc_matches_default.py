@@ -77,3 +77,41 @@ def test_lang_doc_states_auto_detect_default():
     assert "small.en" not in doc
     assert "detect" in doc
     assert "'en'" in doc
+
+
+def test_whisperx_auto_detect_votes_over_several_windows(monkeypatch, tmp_path):
+    calls: list[dict] = []
+
+    class FakeModel:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, path, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("stop after the call under test")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper",
+                        types.SimpleNamespace(WhisperModel=FakeModel))
+    monkeypatch.setitem(sys.modules, "pyannote", types.ModuleType("pyannote"))
+    monkeypatch.setitem(sys.modules, "pyannote.audio",
+                        types.SimpleNamespace(Pipeline=object))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False)))
+    (tmp_path / "audio.wav").write_bytes(b"")
+    with pytest.raises(SystemExit):
+        transcribe.transcribe_whisperx(tmp_path, "small", None, "hf")
+    assert calls[0]["language"] is None
+    assert calls[0]["language_detection_segments"] > 1
+
+
+def test_transcript_cache_key_changes_with_resolved_default():
+    import watch_video
+    old_style = {"whisper": "local", "model": None, "lang": None}
+    keyed = watch_video.transcribe_fp_inputs(
+        "fp", None, None, "local", None, None, None)
+    assert keyed["resolved_model"] == "small"
+    assert keyed["resolved_lang"] is None
+    assert {k: keyed[k] for k in old_style} == old_style
+    english = watch_video.transcribe_fp_inputs(
+        "fp", None, None, "local", None, "en", None)
+    assert english["resolved_model"] == "small.en"

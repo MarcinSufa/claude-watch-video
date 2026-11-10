@@ -64,8 +64,8 @@ Bump `--resolution 1280` when frames contain hard-to-read on-screen text (code, 
 | `--whisper PROVIDER` | Transcription provider: `auto` (default: `captions` when yt-dlp pulled a VTT, else `local`) / `captions` / `local` (faster-whisper, offline, no API key) / `groq` / `openai` / `deepgram` / `whisperx`. See [whisper-providers.md](whisper-providers.md). |
 | `--whisper-api-key KEY` | One-shot API key. **WARNING:** visible in shell history, process listings, and agent transcripts. Do not use on shared machines or recorded sessions. Prefer env var or credentials file. |
 | `--whisper-credentials PATH` | Override default credentials file path (default: `~/.watch-video/credentials.json`). |
-| `--model NAME` | Whisper model. Local: `tiny.en` / `small.en` (default for English) / `small` / `medium` / `large-v3`. Groq: `whisper-large-v3` (default) / `whisper-large-v3-turbo` / `distil-whisper-large-v3-en`. OpenAI: `whisper-1` (only option). |
-| `--lang CODE` | Language code (`en`, `pl`, `es`, `de`, ...) or `auto` for detection. Default `en`. Auto-switches to multilingual model when not `en` (local only). |
+| `--model NAME` | Whisper model. Local: `tiny.en` / `small.en` (with `--lang en`) / `small` / `medium` / `large-v3`. Groq: `whisper-large-v3` (default) / `whisper-large-v3-turbo` / `distil-whisper-large-v3-en`. OpenAI: `whisper-1` (only option). |
+| `--lang CODE` | Language code (`en`, `pl`, `es`, `de`, ...) or `auto`. Default: auto-detect with the multilingual model; `en` picks the English-only model (local, whisperx). |
 | `--start MM:SS --end MM:SS` | Scope to a window; denser per-second frame budget; transcript timestamps offset to original video |
 | `--scene-mode` | Extract frames at scene cuts instead of uniform sampling. Falls back to uniform automatically if too few scene changes (typical for screen recordings). Best for movie clips, slide decks, multi-screen demos. |
 | `--scene-threshold F` | Scene-change sensitivity 0.0-1.0 (default 0.3). Lower = more sensitive |

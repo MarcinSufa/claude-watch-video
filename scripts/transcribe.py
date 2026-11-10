@@ -126,6 +126,11 @@ def pick_model_for_provider(provider: str, model_arg: str | None,
     die(ExitCode.BAD_INPUT, f"unknown --whisper provider: {provider}")
 
 
+def detection_kwargs(language: str | None) -> dict:
+    # One 30 s window misdetects quiet or jargon-heavy openings; vote over several.
+    return {} if language else {"language_detection_segments": LOCAL_DETECTION_WINDOWS}
+
+
 def resolve_api_key(provider: str, explicit_key: str | None,
                     creds_path: Path) -> str:
     """Resolve API key in order: explicit flag, env var, credentials file."""
@@ -341,8 +346,6 @@ def transcribe_local(workdir: Path, model_name: str,
 
     emit("start", step="transcribe", provider="local", language=language or "auto")
     t0 = time.time()
-    # One 30 s window misdetects quiet or jargon-heavy openings; vote over several.
-    detect_kwargs = {} if language else {"language_detection_segments": LOCAL_DETECTION_WINDOWS}
     try:
         segments_iter, info = model.transcribe(
             str(audio_wav),
@@ -350,7 +353,7 @@ def transcribe_local(workdir: Path, model_name: str,
             language=language,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
-            **detect_kwargs,
+            **detection_kwargs(language),
         )
     except Exception as e:  # noqa: BLE001 -- surfaced as a structured error
         _die_local_transcribe(e)
@@ -712,6 +715,7 @@ def transcribe_whisperx(workdir: Path, model_name: str,
                               compute_type=compute_type)
         segments_iter, info = wmodel.transcribe(
             str(audio_path), language=language, word_timestamps=True,
+            **detection_kwargs(language),
         )
         # Materialise the generator so we can iterate twice (once for word
         # collection, once for fallback segment construction).

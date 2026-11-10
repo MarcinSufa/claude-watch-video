@@ -29,7 +29,7 @@ dependencies = [
 # you a fully-functional install).
 full = [
     "yt-dlp>=2024.1.0",
-    "faster-whisper>=1.0.0",
+    "faster-whisper>=1.0.2",  # language_detection_segments
     # faster-whisper 1.2.x passes `metadata_errors=` to av.open(); PyAV 19
     # dropped that argument and every local transcription dies with a
     # TypeError. av 16-18 accept it.

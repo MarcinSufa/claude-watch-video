@@ -596,7 +596,7 @@ def main() -> int:
     ap.add_argument("--no-audio", action="store_true",
                     help="skip transcription even if audio is present")
     ap.add_argument("--model", help="whisper model id (provider-specific; see references/whisper-providers.md)")
-    ap.add_argument("--lang", help="ISO language code or 'auto'")
+    ap.add_argument("--lang", help="ISO language code (en, pl, ...) or 'auto'. Default: auto-detect; 'en' picks the English-only model")
     ap.add_argument("--whisper",
                     choices=("auto", "captions", "local", "groq", "openai",
                              "deepgram", "whisperx"),

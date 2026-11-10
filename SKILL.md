@@ -18,7 +18,7 @@ One command turns the video into files on disk: `frames/t_NNN.jpg` (timestamped 
 | Specific question ("why X", "what's the bug", "when does Y happen") | none; then grep the transcript and read only the matching moments |
 | Long video and you know which part matters | `--start MM:SS --end MM:SS` (frames and audio both; timestamps stay on the original timeline) |
 | Video over 20 min | chunks of `--start/--end`; on CPU add `--model tiny.en` (English) or `--model base` (other languages) |
-| Polish / non-English / mixed audio | `--lang pl` (or the ISO code); the default is `en`, auto-detect is unreliable on short clips |
+| Polish / non-English / mixed audio | default auto-detect (votes over the first 4 x 30 s); `--lang pl` (or the ISO code) pins it, `--lang en` picks the English-only model |
 | Screen recording with small on-screen text | `--resolution 1280`; `--ocr` only to grep text across many frames (needs Tesseract) |
 | Silent screen recording | none (a silent track skips transcription by itself); bound the budget with `--frames N` |
 | Narrated video, want fewer frames | `--dedup` (keeps frames near narrated moments; skipped without a transcript) |

@@ -51,6 +51,7 @@ from _common import (  # noqa: E402
 
 LOCAL_ENGLISH_DEFAULT = "small.en"
 LOCAL_MULTILINGUAL_DEFAULT = "small"
+LOCAL_DETECTION_WINDOWS = 4
 GROQ_DEFAULT_MODEL = "whisper-large-v3"
 OPENAI_DEFAULT_MODEL = "whisper-1"
 DEEPGRAM_DEFAULT_MODEL = "nova-3"     # current SOTA Deepgram model; supports diarization
@@ -98,9 +99,9 @@ def pick_model_for_provider(provider: str, model_arg: str | None,
         if model_arg:
             lang = "en" if model_arg.endswith(".en") else (None if lang_arg in (None, "auto") else lang_arg)
             return model_arg, lang
-        if lang_arg in (None, "en"):
+        if lang_arg == "en":
             return LOCAL_ENGLISH_DEFAULT, "en"
-        if lang_arg == "auto":
+        if lang_arg in (None, "auto"):
             return LOCAL_MULTILINGUAL_DEFAULT, None
         return LOCAL_MULTILINGUAL_DEFAULT, lang_arg
     # Hosted providers: language passed as-is (None = auto)
@@ -117,9 +118,9 @@ def pick_model_for_provider(provider: str, model_arg: str | None,
         if model_arg:
             lang = "en" if model_arg.endswith(".en") else (None if lang_arg in (None, "auto") else lang_arg)
             return model_arg, lang
-        if lang_arg in (None, "en"):
+        if lang_arg == "en":
             return WHISPERX_DEFAULT_MODEL, "en"
-        if lang_arg == "auto":
+        if lang_arg in (None, "auto"):
             return LOCAL_MULTILINGUAL_DEFAULT, None
         return LOCAL_MULTILINGUAL_DEFAULT, lang_arg
     die(ExitCode.BAD_INPUT, f"unknown --whisper provider: {provider}")
@@ -340,6 +341,8 @@ def transcribe_local(workdir: Path, model_name: str,
 
     emit("start", step="transcribe", provider="local", language=language or "auto")
     t0 = time.time()
+    # One 30 s window misdetects quiet or jargon-heavy openings; vote over several.
+    detect_kwargs = {} if language else {"language_detection_segments": LOCAL_DETECTION_WINDOWS}
     try:
         segments_iter, info = model.transcribe(
             str(audio_wav),
@@ -347,6 +350,7 @@ def transcribe_local(workdir: Path, model_name: str,
             language=language,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
+            **detect_kwargs,
         )
     except Exception as e:  # noqa: BLE001 -- surfaced as a structured error
         _die_local_transcribe(e)
@@ -1161,7 +1165,7 @@ def main() -> int:
     ap.add_argument("--model", default=None,
                     help="model id. Local: small.en, small, medium, large-v3. Groq: whisper-large-v3, whisper-large-v3-turbo. OpenAI: whisper-1.")
     ap.add_argument("--lang", default=None,
-                    help="ISO language code (en, pl, es, ...) or 'auto'. Default: en")
+                    help="ISO language code (en, pl, es, ...) or 'auto'. Default: auto-detect")
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
     args = ap.parse_args()

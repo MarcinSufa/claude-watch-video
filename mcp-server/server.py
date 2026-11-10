@@ -759,7 +759,8 @@ async def watch_video(
         no_html: Skip report.html.
         no_docx: Skip report.docx.
         lang: Spoken language as an ISO code ('en', 'pl') or 'auto'. Omit
-            to let the provider detect it.
+            to let the provider detect it; 'en' on local picks the more
+            accurate English-only model.
         model: Whisper model id, provider-specific (e.g. 'tiny.en', 'base',
             'small' for local faster-whisper). Omit for the provider default.
         resolution: Frame width in px (CLI default 960). Larger frames cost

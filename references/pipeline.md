@@ -29,8 +29,8 @@ A single orchestrator `scripts/watch_video.py` does everything. Sub-scripts can 
 4. **Extract frames** via `frames.py` (`ffmpeg`): uniform sampling at computed fps (or scene-change if `--scene-mode`), JPEGs at 960 px wide → `<workdir>/frames/t_NNN.jpg`. Per-frame timestamps stored in `meta.json` (so non-uniform spacing works downstream). Atomic: stages to a sibling dir, renames on success.
 5. **Decide on audio.** If `is_silent` or `--no-audio` → skip transcription. Otherwise extract mono 16 kHz `audio.wav` and run `transcribe.py`.
 6. **Whisper model** picked by `--lang`:
-   - `en` (default) → `small.en` — English-only, ~5% better English accuracy
-   - `auto` → `small` (multilingual) — auto-detects 99 languages
+   - omitted or `auto` (default) → `small` (multilingual), language detected over up to 4 x 30 s windows
+   - `en` → `small.en` — English-only, ~5% better English accuracy
    - explicit code (`pl`, `es`, `de`, ...) → `small` multilingual with language forced
    - `--model NAME` overrides everything
 7. **`--start`/`--end` window** applies consistently across frames AND audio. Transcript timestamps are offset by `--start` so they map to the *original* video timeline (not 0:00 of the window).

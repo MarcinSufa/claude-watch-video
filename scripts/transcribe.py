@@ -329,7 +329,7 @@ def transcribe_local(workdir: Path, model_name: str,
         from faster_whisper import WhisperModel
     except ImportError:
         die(ExitCode.MISSING_DEP,
-            "faster_whisper not installed. Run: pip install --user faster-whisper",
+            "faster_whisper not installed. Run: pip install --user 'faster-whisper>=1.0.2'",
             dependency="faster_whisper")
 
     audio_wav = workdir / "audio.wav"
@@ -648,7 +648,7 @@ def transcribe_whisperx(workdir: Path, model_name: str,
         from faster_whisper import WhisperModel  # type: ignore[import-not-found]
     except ImportError:
         die(ExitCode.MISSING_DEP,
-            "faster-whisper not installed. Run: pip install faster-whisper",
+            "faster-whisper not installed. Run: pip install 'faster-whisper>=1.0.2'",
             dependency="faster-whisper")
 
     # pyannote.audio is the heavy optional dep -- only required for the

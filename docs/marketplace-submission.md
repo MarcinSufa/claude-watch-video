@@ -52,7 +52,7 @@ video, transcription, whisper, ffmpeg, jira, bug-repro, screen-recording, yt-dlp
 
 - Python 3.10+
 - `ffmpeg` + `ffprobe` (`sudo apt install ffmpeg` / `brew install ffmpeg` / `winget install Gyan.FFmpeg`)
-- `faster-whisper` (`pip install --user faster-whisper 'av<19'`) for local transcription (PyAV 19 breaks faster-whisper 1.2.x)
+- `faster-whisper` (`pip install --user 'faster-whisper>=1.0.2' 'av<19'`) for local transcription (PyAV 19 breaks faster-whisper 1.2.x)
 
 Optional dependencies unlock more features:
 - `yt-dlp` — URL ingestion

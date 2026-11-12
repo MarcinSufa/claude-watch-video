@@ -76,7 +76,7 @@ Optional (unlock features as you need them):
 | Adds | Install |
 |---|---|
 | URL mode (YouTube, Loom, …) | `pip install --user yt-dlp` |
-| Local transcription (`--whisper local`) | `pip install --user faster-whisper 'av<19'` (PyAV 19 breaks faster-whisper 1.2.x: `TypeError ... 'metadata_errors'`) |
+| Local transcription (`--whisper local`) | `pip install --user 'faster-whisper>=1.0.2' 'av<19'` (PyAV 19 breaks faster-whisper 1.2.x: `TypeError ... 'metadata_errors'`) |
 | Smart dedup (`--dedup`) | `pip install --user Pillow imagehash` |
 | OCR (`--ocr`) | `pip install --user pytesseract Pillow` + Tesseract binary ([references/setup.md](references/setup.md), [OCR notes](references/ocr-dedup.md#on-screen-text-search-with---ocr)) |
 | Hosted Whisper (Groq/OpenAI/Deepgram) | API key — env var or `~/.watch-video/credentials.json` |

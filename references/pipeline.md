@@ -29,8 +29,8 @@ A single orchestrator `scripts/watch_video.py` does everything. Sub-scripts can 
 4. **Extract frames** via `frames.py` (`ffmpeg`): uniform sampling at computed fps (or scene-change if `--scene-mode`), JPEGs at 960 px wide → `<workdir>/frames/t_NNN.jpg`. Per-frame timestamps stored in `meta.json` (so non-uniform spacing works downstream). Atomic: stages to a sibling dir, renames on success.
 5. **Decide on audio.** If `is_silent` or `--no-audio` → skip transcription. Otherwise extract mono 16 kHz `audio.wav` and run `transcribe.py`.
 6. **Whisper model** picked by `--lang`:
-   - `en` (default) → `small.en` — English-only, ~5% better English accuracy
-   - `auto` → `small` (multilingual) — auto-detects 99 languages
+   - omitted or `auto` (default) → `small` (multilingual), language detected over up to 4 x 30 s windows
+   - `en` → `small.en` — English-only, ~5% better English accuracy
    - explicit code (`pl`, `es`, `de`, ...) → `small` multilingual with language forced
    - `--model NAME` overrides everything
 7. **`--start`/`--end` window** applies consistently across frames AND audio. Transcript timestamps are offset by `--start` so they map to the *original* video timeline (not 0:00 of the window).
@@ -64,8 +64,8 @@ Bump `--resolution 1280` when frames contain hard-to-read on-screen text (code, 
 | `--whisper PROVIDER` | Transcription provider: `auto` (default: `captions` when yt-dlp pulled a VTT, else `local`) / `captions` / `local` (faster-whisper, offline, no API key) / `groq` / `openai` / `deepgram` / `whisperx`. See [whisper-providers.md](whisper-providers.md). |
 | `--whisper-api-key KEY` | One-shot API key. **WARNING:** visible in shell history, process listings, and agent transcripts. Do not use on shared machines or recorded sessions. Prefer env var or credentials file. |
 | `--whisper-credentials PATH` | Override default credentials file path (default: `~/.watch-video/credentials.json`). |
-| `--model NAME` | Whisper model. Local: `tiny.en` / `small.en` (default for English) / `small` / `medium` / `large-v3`. Groq: `whisper-large-v3` (default) / `whisper-large-v3-turbo` / `distil-whisper-large-v3-en`. OpenAI: `whisper-1` (only option). |
-| `--lang CODE` | Language code (`en`, `pl`, `es`, `de`, ...) or `auto` for detection. Default `en`. Auto-switches to multilingual model when not `en` (local only). |
+| `--model NAME` | Whisper model. Local: `tiny.en` / `small.en` (with `--lang en`) / `small` / `medium` / `large-v3`. Groq: `whisper-large-v3` (default) / `whisper-large-v3-turbo` / `distil-whisper-large-v3-en`. OpenAI: `whisper-1` (only option). |
+| `--lang CODE` | Language code (`en`, `pl`, `es`, `de`, ...) or `auto`. Default: auto-detect with the multilingual model; `en` picks the English-only model (local, whisperx). |
 | `--start MM:SS --end MM:SS` | Scope to a window; denser per-second frame budget; transcript timestamps offset to original video |
 | `--scene-mode` | Extract frames at scene cuts instead of uniform sampling. Falls back to uniform automatically if too few scene changes (typical for screen recordings). Best for movie clips, slide decks, multi-screen demos. |
 | `--scene-threshold F` | Scene-change sensitivity 0.0-1.0 (default 0.3). Lower = more sensitive |

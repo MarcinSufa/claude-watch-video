@@ -51,6 +51,7 @@ from _common import (  # noqa: E402
 
 LOCAL_ENGLISH_DEFAULT = "small.en"
 LOCAL_MULTILINGUAL_DEFAULT = "small"
+LOCAL_DETECTION_WINDOWS = 4
 GROQ_DEFAULT_MODEL = "whisper-large-v3"
 OPENAI_DEFAULT_MODEL = "whisper-1"
 DEEPGRAM_DEFAULT_MODEL = "nova-3"     # current SOTA Deepgram model; supports diarization
@@ -98,9 +99,9 @@ def pick_model_for_provider(provider: str, model_arg: str | None,
         if model_arg:
             lang = "en" if model_arg.endswith(".en") else (None if lang_arg in (None, "auto") else lang_arg)
             return model_arg, lang
-        if lang_arg in (None, "en"):
+        if lang_arg == "en":
             return LOCAL_ENGLISH_DEFAULT, "en"
-        if lang_arg == "auto":
+        if lang_arg in (None, "auto"):
             return LOCAL_MULTILINGUAL_DEFAULT, None
         return LOCAL_MULTILINGUAL_DEFAULT, lang_arg
     # Hosted providers: language passed as-is (None = auto)
@@ -117,12 +118,17 @@ def pick_model_for_provider(provider: str, model_arg: str | None,
         if model_arg:
             lang = "en" if model_arg.endswith(".en") else (None if lang_arg in (None, "auto") else lang_arg)
             return model_arg, lang
-        if lang_arg in (None, "en"):
+        if lang_arg == "en":
             return WHISPERX_DEFAULT_MODEL, "en"
-        if lang_arg == "auto":
+        if lang_arg in (None, "auto"):
             return LOCAL_MULTILINGUAL_DEFAULT, None
         return LOCAL_MULTILINGUAL_DEFAULT, lang_arg
     die(ExitCode.BAD_INPUT, f"unknown --whisper provider: {provider}")
+
+
+def detection_kwargs(language: str | None) -> dict:
+    # One 30 s window misdetects quiet or jargon-heavy openings; vote over several.
+    return {} if language else {"language_detection_segments": LOCAL_DETECTION_WINDOWS}
 
 
 def resolve_api_key(provider: str, explicit_key: str | None,
@@ -323,7 +329,7 @@ def transcribe_local(workdir: Path, model_name: str,
         from faster_whisper import WhisperModel
     except ImportError:
         die(ExitCode.MISSING_DEP,
-            "faster_whisper not installed. Run: pip install --user faster-whisper",
+            "faster_whisper not installed. Run: pip install --user 'faster-whisper>=1.0.2'",
             dependency="faster_whisper")
 
     audio_wav = workdir / "audio.wav"
@@ -347,6 +353,7 @@ def transcribe_local(workdir: Path, model_name: str,
             language=language,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
+            **detection_kwargs(language),
         )
     except Exception as e:  # noqa: BLE001 -- surfaced as a structured error
         _die_local_transcribe(e)
@@ -641,7 +648,7 @@ def transcribe_whisperx(workdir: Path, model_name: str,
         from faster_whisper import WhisperModel  # type: ignore[import-not-found]
     except ImportError:
         die(ExitCode.MISSING_DEP,
-            "faster-whisper not installed. Run: pip install faster-whisper",
+            "faster-whisper not installed. Run: pip install 'faster-whisper>=1.0.2'",
             dependency="faster-whisper")
 
     # pyannote.audio is the heavy optional dep -- only required for the
@@ -708,6 +715,7 @@ def transcribe_whisperx(workdir: Path, model_name: str,
                               compute_type=compute_type)
         segments_iter, info = wmodel.transcribe(
             str(audio_path), language=language, word_timestamps=True,
+            **detection_kwargs(language),
         )
         # Materialise the generator so we can iterate twice (once for word
         # collection, once for fallback segment construction).
@@ -1161,7 +1169,7 @@ def main() -> int:
     ap.add_argument("--model", default=None,
                     help="model id. Local: small.en, small, medium, large-v3. Groq: whisper-large-v3, whisper-large-v3-turbo. OpenAI: whisper-1.")
     ap.add_argument("--lang", default=None,
-                    help="ISO language code (en, pl, es, ...) or 'auto'. Default: en")
+                    help="ISO language code (en, pl, es, ...) or 'auto'. Default: auto-detect")
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
     args = ap.parse_args()

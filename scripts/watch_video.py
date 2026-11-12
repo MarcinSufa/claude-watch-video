@@ -401,6 +401,25 @@ def create_contact_sheet(frames_info: dict, workdir: Path) -> str:
     return str(sheet_path)
 
 
+def transcribe_fp_inputs(video_fp: str, start: str | None, end: str | None,
+                         whisper: str, model: str | None, lang: str | None,
+                         captions_vtt_path: str | None) -> dict:
+    from transcribe import pick_model_for_provider
+    # Resolved model and language, so a changed default invalidates old transcripts.
+    resolved_model, resolved_lang = pick_model_for_provider(whisper, model, lang)
+    return {
+        "video_fp": video_fp,
+        "start": start, "end": end,
+        "whisper": whisper,
+        "model": model, "lang": lang,
+        "resolved_model": resolved_model, "resolved_lang": resolved_lang,
+        # Include the captions path in the fingerprint when used so a
+        # re-fetch that pulled a different captions file invalidates the
+        # transcript cache.
+        "captions_vtt": captions_vtt_path if whisper == "captions" else None,
+    }
+
+
 def ocr(workdir: Path, lang: str, min_text_length: int) -> dict:
     return run_step("ocr",
                     [sys.executable, str(SCRIPTS_DIR / "ocr.py"), str(workdir),
@@ -596,7 +615,7 @@ def main() -> int:
     ap.add_argument("--no-audio", action="store_true",
                     help="skip transcription even if audio is present")
     ap.add_argument("--model", help="whisper model id (provider-specific; see references/whisper-providers.md)")
-    ap.add_argument("--lang", help="ISO language code or 'auto'")
+    ap.add_argument("--lang", help="ISO language code (en, pl, ...) or 'auto'. Default: auto-detect; 'en' picks the English-only model")
     ap.add_argument("--whisper",
                     choices=("auto", "captions", "local", "groq", "openai",
                              "deepgram", "whisperx"),
@@ -896,17 +915,9 @@ def main() -> int:
              requested_provider=args.whisper,
              captions_available=bool(captions_vtt_path))
 
-        transcribe_fp_inputs = {
-            "video_fp": file_fingerprint(video),
-            "start": args.start, "end": args.end,
-            "whisper": effective_whisper,
-            "model": args.model, "lang": args.lang,
-            # Include the captions path in the fingerprint when used so a
-            # re-fetch that pulled a different captions file invalidates the
-            # transcript cache.
-            "captions_vtt": captions_vtt_path if effective_whisper == "captions" else None,
-        }
-        transcribe_fp = step_fingerprint("transcribe", transcribe_fp_inputs)
+        transcribe_fp = step_fingerprint("transcribe", transcribe_fp_inputs(
+            file_fingerprint(video), args.start, args.end, effective_whisper,
+            args.model, args.lang, captions_vtt_path))
         transcript_outputs = [workdir / "transcript.txt", workdir / "transcript.md"]
         if is_cached(meta, "transcribe", transcribe_fp, transcript_outputs):
             emit("cache_hit", step="transcribe", fingerprint=transcribe_fp)

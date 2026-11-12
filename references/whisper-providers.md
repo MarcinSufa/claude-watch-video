@@ -99,7 +99,7 @@ Read when picking a non-default `--whisper` provider or `--model`, setting up a 
 Default model depends on provider:
 
 - `local --lang en` → `small.en` (English-only, ~5% better accuracy on English)
-- `local --lang auto` or other → `small` (multilingual, 99 languages)
+- `local` without `--lang`, `--lang auto` or other → `small` (multilingual, 99 languages, auto-detect without a code)
 - `groq` → `whisper-large-v3` (large-v3 is Groq's free-tier default and very fast)
 - `openai` → `whisper-1` (only option)
 
